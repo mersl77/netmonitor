@@ -28,7 +28,13 @@ netmonitor-gui = "netmonitor.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-netmonitor = ["resources/icons/*.svg", "resources/icons/*.png", "resources/icons/*.ico", "resources/styles/*.qss"]
+netmonitor = [
+    "resources/fonts/*.ttf",
+    "resources/fonts/OFL-*.txt",
+    "resources/icons/*.png",
+    "resources/icons/*.ico",
+    "resources/icons/*.icns",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

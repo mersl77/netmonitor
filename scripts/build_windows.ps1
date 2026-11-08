@@ -5,13 +5,14 @@
   Parametry:
       -SkipTests      nespouštět pytest
       -NoInstaller    nevytvářet instalátor ani když je Inno Setup k dispozici
+      -Icons          vynutit regeneraci všech ikon (jinak jen pokud některá chybí)
   Výstup:
       dist\NetMonitor\NetMonitor.exe            (přenosná verze – celá složka)
       dist\NetMonitor-1.3.4-win64.zip
       dist\NetMonitor-1.3.4-setup.exe           (pokud je nainstalovaný Inno Setup 6)
   Nemění nic mimo složku projektu (venv v .venv-build).
 #>
-param([switch]$SkipTests, [switch]$NoInstaller)
+param([switch]$SkipTests, [switch]$NoInstaller, [switch]$Icons)
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
@@ -34,8 +35,14 @@ $vpy = ".\.venv-build\Scripts\python.exe"
 & $vpy -m pip install -r requirements-dev.txt pillow
 if ($LASTEXITCODE -ne 0) { throw "pip install selhal" }
 
-Write-Host "==> Ikony" -ForegroundColor Cyan
-& $vpy scripts\make_icons.py
+$iconFiles = @("netmonitor.png", "netmonitor-16.png", "netmonitor-32.png", "netmonitor-48.png",
+               "netmonitor-64.png", "netmonitor-128.png", "netmonitor-256.png", "netmonitor.ico", "netmonitor.icns")
+$missingIcons = $iconFiles | Where-Object { -not (Test-Path -Path "src/netmonitor/resources/icons/$_" -PathType Leaf) }
+if ($Icons -or $missingIcons) {
+    Write-Host "==> Ikony" -ForegroundColor Cyan
+    & $vpy scripts\make_icons.py
+    if ($LASTEXITCODE -ne 0) { throw "Generování ikon selhalo" }
+}
 
 if (-not $SkipTests) {
     Write-Host "==> Testy" -ForegroundColor Cyan

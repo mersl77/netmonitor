@@ -1,6 +1,7 @@
 """Vygeneruje ikony aplikace (PNG, ICO, ICNS) z vektorové kresby v netmonitor.gui.icons.
 
-Spouští se automaticky z build skriptů:  python scripts/make_icons.py
+Build skripty jej spouštějí při chybějících ikonách nebo s --icons (PowerShell: -Icons).
+Ruční regenerace: python scripts/make_icons.py
 """
 import os
 import sys

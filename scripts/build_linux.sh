@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # NetMonitor – sestavení pro Linux (Debian/Ubuntu/…)
-#   ./scripts/build_linux.sh [--skip-tests] [--deb] [--appimage]
+#   ./scripts/build_linux.sh [--skip-tests] [--deb] [--appimage] [--icons]
+# Ikony se generují, pokud některá chybí; --icons vynutí regeneraci všech ikon.
 # Výstup:
 #   dist/NetMonitor/NetMonitor                  (onedir)
 #   dist/NetMonitor-<verze>-linux-x86_64.tar.gz   (+ .desktop, ikona, install.sh)
@@ -29,9 +30,9 @@ check_qt_xcb_libraries() {
 
 cd "$(dirname "$0")/.."
 VER=1.3.4
-SKIP_TESTS=0; DEB=0; APPIMAGE=0
+SKIP_TESTS=0; DEB=0; APPIMAGE=0; ICONS=0
 for a in "$@"; do
-  case "$a" in --skip-tests) SKIP_TESTS=1;; --deb) DEB=1;; --appimage) APPIMAGE=1;; esac
+  case "$a" in --skip-tests) SKIP_TESTS=1;; --deb) DEB=1;; --appimage) APPIMAGE=1;; --icons) ICONS=1;; esac
 done
 
 PY=$(command -v python3.13 || command -v python3.12 || command -v python3)
@@ -40,7 +41,10 @@ PY=$(command -v python3.13 || command -v python3.12 || command -v python3)
 VPY=.venv-build/bin/python
 $VPY -m pip install -q --upgrade pip
 $VPY -m pip install -q -r requirements-dev.txt pillow
-$VPY scripts/make_icons.py
+for icon in netmonitor.png netmonitor-{16,32,48,64,128,256}.png netmonitor.ico netmonitor.icns; do
+  if [ ! -f "src/netmonitor/resources/icons/$icon" ]; then ICONS=1; break; fi
+done
+if [ "$ICONS" -eq 1 ]; then $VPY scripts/make_icons.py; fi
 if [ $SKIP_TESTS -eq 0 ]; then QT_QPA_PLATFORM=offscreen $VPY -m pytest -q; fi
 $VPY -m PyInstaller packaging/netmonitor.spec --noconfirm --clean
 check_qt_xcb_libraries dist/NetMonitor/_internal
@@ -87,6 +91,8 @@ if [ $APPIMAGE -eq 1 ]; then
   cp packaging/linux/netmonitor.desktop "$A/netmonitor.desktop"
   sed -i 's#^Exec=.*#Exec=NetMonitor#' "$A/netmonitor.desktop"
   cp "$ICON" "$A/netmonitor.png"
+  # Proměnné a příkazy se mají vyhodnotit až při spuštění vytvořeného AppRun.
+  # shellcheck disable=SC2016
   printf '#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/usr/bin/NetMonitor" "$@"\n' > "$A/AppRun"
   chmod +x "$A/AppRun"
   ARCH=x86_64 appimagetool "$A" "dist/NetMonitor-$VER-x86_64.AppImage"
