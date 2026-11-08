@@ -786,7 +786,7 @@ class SettingsDialog(QDialog):
         self.status.setText(f"Importováno: {fn}")
 
     def _reset_targets(self) -> None:
-        if QMessageBox.question(self, "Výchozí cíle", "Nahradit seznam cílů výchozími 10 položkami?") \
+        if QMessageBox.question(self, "Výchozí cíle", "Nahradit seznam cílů výchozí sadou?") \
                 == QMessageBox.StandardButton.Yes:
             self._apply(lambda c: setattr(c.ping, "targets", default_targets()))
             self._fill_table()

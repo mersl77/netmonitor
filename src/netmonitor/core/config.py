@@ -303,20 +303,15 @@ def targets_from_list(items: Any) -> list[PingTarget]:
 
 
 def default_targets() -> list[PingTarget]:
-    """Výchozí seznam ze specifikace (5.1). Stejná IP u dvou zařízení je povolená."""
-    spec = [
-        ("Zelina", "zelina.eu", "globe", True),
-        ("Seznam", "seznam.cz", "globe", True),
-        ("O2 DNS Primár", "160.218.161.60", "dns", True),
-        ("O2 DNS Sekundár", "194.228.211.33", "dns", True),
-        ("Google DNS", "8.8.8.8", "dns", True),
-        ("Huawei anténa", "192.168.1.1", "wifi", False),
-        ("Greenpacket H5", "192.168.0.1", "wifi", False),
-        ("SB3 router", "192.168.0.1", "router", False),
-        ("O2 modem", "10.0.0.138", "modem", False),
-        ("Smart Box", "10.0.1.138", "box", False),
+    """Neutrální sada pro nové instalace a ruční obnovu; uložené cíle se nemigrují."""
+    return [
+        new_section("Internet"),
+        PingTarget(name="Cloudflare DNS", host="1.1.1.1", icon="dns"),
+        PingTarget(name="Google DNS", host="8.8.8.8", icon="dns"),
+        PingTarget(name="Cloudflare", host="cloudflare.com", icon="globe"),
+        # Informační sekce: bránu automaticky měří Controller jako __gateway__.
+        new_section("Místní síť"),
     ]
-    return [PingTarget(name=n, host=h, icon=i, show_rtt=r) for n, h, i, r in spec]
 
 
 def new_section(name: str) -> PingTarget:

@@ -66,7 +66,8 @@ src/netmonitor/
 
 ## Historie
 
-Ping každé 2 s × 10 cílů = 432 000 vzorků/den. Místo toho se ukládá **1 řádek / cíl / minuta**
-(min, avg, max, OK, FAIL, poslední stav a chyba) jedním dávkovým UPSERTem za minutu → ~14 400 řádků/den.
+Ping každé 2 s × 3 výchozí internetové cíle = 129 600 vzorků/den. Místo toho se ukládá **1 řádek / cíl / minuta**
+(min, avg, max, OK, FAIL, poslední stav a chyba) jedním dávkovým UPSERTem za minutu → ~4 320 řádků/den.
+Nadpisy sekcí se nepingují; automatická sonda brány (`__gateway__`) se měří samostatně a do historie cílů se neukládá.
 Graf „1 hodina“ používá surové vzorky z paměťového ring-bufferu. Události (výpadek, obnovení, změna WAN,
 internet) jsou v samostatné tabulce a zapisují se okamžitě.

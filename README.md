@@ -88,6 +88,21 @@ pytest            # Linux bez displeje: QT_QPA_PLATFORM=offscreen pytest
 - **Dvojklik na nadpis** – Nastavení
 - **Ikona v oznamovací oblasti** – barva = stav připojení; klik = zobrazit/skrýt; menu (zde lze vypnout click-through)
 
+## Výchozí ping cíle
+
+Nová instalace používá sekci **Internet** se třemi zapnutými cíli: Cloudflare DNS (`1.1.1.1`),
+Google DNS (`8.8.8.8`) a Cloudflare (`cloudflare.com`). Doménový cíl doplňuje IP adresy o ověření
+překladu DNS; `cloudflare.com` je zvolena jako veřejná doména provozovatele síťových služeb,
+bez vazby na místní síť nebo konkrétního poskytovatele připojení. Dostupnost ICMP není zaručená
+v každé síti; cíle lze upravit v nastavení. Všechny tři ponechávají `internet_probe = auto`.
+
+Sekce **Místní síť** je informační a připravená pro vlastní zařízení. Výchozí bránu aplikace
+zjišťuje a pinguje samostatně při zapnuté volbě *Nastavení → Síť → Pingovat výchozí bránu*;
+do seznamu cílů ji nepřidává podruhé. Její dostupnost vstupuje do vyhodnocení stavu připojení.
+
+Existující `config.json` si zachová uložené cíle včetně jejich pořadí a nastavení.
+Tlačítko **Nastavení → Ping cíle → Obnovit výchozí cíle** po potvrzení nahradí seznam touto novou sadou.
+
 ## Kde jsou data
 
 | | Windows | Linux | macOS |

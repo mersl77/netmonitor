@@ -60,6 +60,7 @@ def test_reorder_by_drag_never_loses_items():
 
 def test_sections_in_config_roundtrip_and_not_monitored():
     cfg = AppConfig.from_dict({})
+    cfg.ping.targets = [PingTarget(name=f"Cíl {i}", host=f"192.0.2.{i}") for i in range(1, 11)]
     cfg.ping.targets.insert(0, new_section("Domény"))
     cfg.ping.targets.insert(3, new_section("DNS"))
     data = cfg.to_dict()
