@@ -154,6 +154,7 @@ def adapter_details() -> dict[str, dict]:
                 "metric": a.Ipv4Metric,
                 "dhcp": bool(a.Flags & IP_ADAPTER_DHCP_ENABLED),
                 "if_index": a.IfIndex,
+                "guid": ctypes.string_at(a.AdapterName).decode("ascii") if a.AdapterName else "",
             }
             p = a.Next
             guard += 1
@@ -304,6 +305,31 @@ ERROR_CANCELLED = 1223
 def dhcp_enabled(iface: str) -> bool | None:
     d = adapter_details().get(iface)
     return None if d is None else d.get("dhcp")
+
+
+def ip_config_details(iface: str) -> dict:
+    """GAA poskytne údaje karty, režim DNS pochází z jejího TCP/IP klíče registru."""
+    d = adapter_details().get(iface, {})
+    state: dict = {"dhcp": d.get("dhcp"), "gateway": None, "dns": None}
+    has_ipv4 = any(":" not in ip for ip in d.get("ips", []))
+    if d.get("up") and has_ipv4 and "gateways" in d:
+        state["gateway"] = next((g for g in d["gateways"] if ":" not in g), "")
+    if d.get("up") and has_ipv4 and "dns" in d:
+        state["dns"] = tuple(g for g in d["dns"] if ":" not in g)
+    if d.get("guid"):
+        try:
+            import importlib
+            winreg = importlib.import_module("winreg")
+            path = "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\" + d["guid"]
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as key:
+                try:
+                    servers, _ = winreg.QueryValueEx(key, "NameServer")
+                except FileNotFoundError:
+                    servers = ""
+                state["dns_dhcp"] = not bool(servers.strip())
+        except OSError:
+            pass
+    return state
 
 
 def _shellexecute_struct():

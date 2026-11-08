@@ -114,3 +114,13 @@ def test_shellexecuteinfo_layout_x64():
         pytest.skip("jen 64bit")
     from netmonitor.platform.windows import _shellexecute_struct
     assert ctypes.sizeof(_shellexecute_struct()) == 112        # sizeof(SHELLEXECUTEINFOW) na x64
+
+
+@pytest.mark.parametrize("dns,expected", [
+    ([f"192.0.2.{i}" for i in range(1, 12)], [f"192.0.2.{i}" for i in range(1, 9)]),
+    ("192.0.2.53", ["192.0.2.53"]), (None, []), (42, []),
+])
+def test_profile_dns_is_bounded_and_string_is_one_server(dns, expected):
+    """Regrese review 2: profil má nejvýše osm DNS, řetězec není seznam znaků."""
+    settings = IpSettings.from_profile("other-test", {"name": "Test", "dns": dns})
+    assert settings.dns == expected

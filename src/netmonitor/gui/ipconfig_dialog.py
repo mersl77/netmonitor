@@ -1,21 +1,18 @@
 """Dialog: nastavení IPv4 adresy a DNS vybrané síťové karty (DHCP / pevná IP) + uložené profily."""
 from __future__ import annotations
 
-import logging
 import sys
+from html import escape
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QVBoxLayout)
 
-from .. import platform as plat
 from ..core.ipconfig import IpSettings, parse_mask
-from ..core.network_info import InterfaceInfo
+from ..core.network_info import AdapterConfiguration, InterfaceInfo
 from ..core.ping_engine import Resolver, ping_host
 from . import theme
 from .controller import Controller
-
-log = logging.getLogger(__name__)
 
 DNS_PRESETS = [
     ("Vlastní…", None),
@@ -41,6 +38,10 @@ class IpConfigDialog(QDialog):
         self.setStyleSheet(theme.DIALOG_QSS)
         self.resize(560, 0)
         self._busy = False
+        self._applying = False
+        self._loading = False
+        self._load_generation = 0
+        self._loaded: AdapterConfiguration | None = None
         v = QVBoxLayout(self)
 
         top = QFormLayout()
@@ -52,11 +53,13 @@ class IpConfigDialog(QDialog):
         prof = QHBoxLayout()
         self.profiles = QComboBox()
         prof.addWidget(self.profiles, 1)
+        self.profile_controls: list[QComboBox | QPushButton] = [self.profiles]
         for label, fn in (("Načíst", self._load_profile), ("Uložit jako…", self._save_profile),
                           ("Smazat", self._delete_profile)):
             b = QPushButton(label)
             b.clicked.connect(fn)
             prof.addWidget(b)
+            self.profile_controls.append(b)
         top.addRow("Profil", prof)
         v.addLayout(top)
 
@@ -73,10 +76,10 @@ class IpConfigDialog(QDialog):
         r.addStretch(1)
         f_ip.addRow(r)
         self.ip = QLineEdit(placeholderText="např. 192.168.1.50")
-        self.mask = QLineEdit(placeholderText="255.255.255.0 nebo 24")
+        self.netmask = QLineEdit(placeholderText="255.255.255.0 nebo 24")
         self.gw = QLineEdit(placeholderText="např. 192.168.1.1 (prázdné = bez brány)")
         f_ip.addRow("IP adresa", self.ip)
-        f_ip.addRow("Maska / prefix", self.mask)
+        f_ip.addRow("Maska / prefix", self.netmask)
         f_ip.addRow("Výchozí brána", self.gw)
         v.addWidget(g_ip)
 
@@ -98,10 +101,11 @@ class IpConfigDialog(QDialog):
         self.dns_preset.currentIndexChanged.connect(self._apply_dns_preset)
         f_dns.addRow("Předvolba", self.dns_preset)
         self.dns1 = QLineEdit(placeholderText="Primární DNS")
-        self.dns2 = QLineEdit(placeholderText="Sekundární DNS (nepovinné)")
+        self.dns2 = QLineEdit(placeholderText="Další DNS (oddělené čárkou)")
         f_dns.addRow("DNS 1", self.dns1)
         f_dns.addRow("DNS 2", self.dns2)
         v.addWidget(g_dns)
+        self._form_groups = (g_ip, g_dns)
 
         self.msg = QLabel()
         self.msg.setWordWrap(True)
@@ -125,7 +129,7 @@ class IpConfigDialog(QDialog):
 
         for rb in (self.rb_dhcp, self.rb_static, self.rb_dns_auto, self.rb_dns_static):
             rb.toggled.connect(self._update_enabled)
-        for le in (self.ip, self.mask, self.gw, self.dns1, self.dns2):
+        for le in (self.ip, self.netmask, self.gw, self.dns1, self.dns2):
             le.textChanged.connect(self._live_validate)
         ctrl.config_changed.connect(lambda _c: self._fill_profiles())
         self._reload_pending = False
@@ -139,9 +143,11 @@ class IpConfigDialog(QDialog):
 
     # ------------------------------------------------------------------ naplnění
     def open_for(self, iface: str | None = None) -> None:
-        self._fill_adapters(iface)
-        self._fill_profiles()
-        self.msg.clear()
+        if self._applying:
+            self._reload_pending = True
+        else:
+            self._fill_adapters(iface)
+            self._fill_profiles()
         self.show()
         self.raise_()
         self.activateWindow()
@@ -170,42 +176,50 @@ class IpConfigDialog(QDialog):
         self.adapter.blockSignals(False)
         self._load_adapter()
 
-    def _info(self, name: str) -> InterfaceInfo | None:
-        net = self.ctrl.network
-        if net and net.active and net.active.name == name:
-            return net.active
-        return next((i for i in self._interfaces() if i.name == name), None)
-
     def _load_adapter(self) -> None:
+        if self._applying:
+            self._reload_pending = True
+            return
         name = self.adapter.currentData()
-        info = self._info(name) if name else None
-        try:
-            dhcp = plat.current().dhcp_enabled(name) if name else None
-        except Exception:  # noqa: BLE001
-            log.debug("dhcp_enabled selhalo", exc_info=True)
-            dhcp = None
-        ip = info.ipv4[0] if info and info.ipv4 else ""
-        mask = info.ipv4_masks[0] if info and info.ipv4_masks and info.ipv4_masks[0] else "255.255.255.0"
-        gw = info.gateway if info and info.gateway else ""
-        dns = [d for d in (info.dns if info else ()) if ":" not in d]
-        try:
-            prefix = f"/{parse_mask(mask)}" if ip else ""
-        except ValueError:
-            prefix = ""
-        dhcp_txt = {True: "DHCP", False: "pevná IP", None: "režim nezjištěn"}[dhcp]
-        self.current.setText(f"{ip or '–'}{prefix}, brána {gw or '–'}, DNS {', '.join(dns) or '–'}  ({dhcp_txt})")
-        self.ip.setText(ip)
-        self.mask.setText(mask)
-        self.gw.setText(gw)
+        self._load_generation += 1
+        generation = self._load_generation
+        self._loaded = None
+        self._loading = True
+        self._set_busy(True, "Načítám aktuální nastavení vybrané karty…")
+        self.current.setText("načítám…")
+        for field in (self.ip, self.netmask, self.gw, self.dns1, self.dns2):
+            field.clear()
+        if not name:
+            self._adapter_loaded(generation, AdapterConfiguration(""))
+            return
+        self.ctrl._run_bg(f"ip-details-{id(self)}-{generation}",
+                          lambda: self.ctrl.net_provider.ip_configuration(name),
+                          lambda result: self._adapter_loaded(generation, result))
+
+    def _adapter_loaded(self, generation: int, result) -> None:
+        # Pozdní odpověď jiné karty (nebo předchozího otevření) nesmí přepsat formulář.
+        if generation != self._load_generation:
+            return
+        name = self.adapter.currentData() or ""
+        state = result if isinstance(result, AdapterConfiguration) and result.iface == name else AdapterConfiguration(name)
+        self._loaded = state
+        self.current.setText(state.summary())
+        self.ip.setText(state.ip or "")
+        self.netmask.setText(state.mask or "")
+        self.gw.setText(state.gateway or "")
+        dns = state.dns or ()
         self.dns1.setText(dns[0] if dns else "")
-        self.dns2.setText(dns[1] if len(dns) > 1 else "")
-        static = dhcp is False
-        self.rb_static.setChecked(static)
-        self.rb_dhcp.setChecked(not static)
-        self.rb_dns_static.setChecked(static)
-        self.rb_dns_auto.setChecked(not static)
+        self.dns2.setText(", ".join(dns[1:]))
+        self.rb_static.setChecked(state.dhcp is False)
+        self.rb_dhcp.setChecked(state.dhcp is not False)
+        self.rb_dns_static.setChecked(state.dns_dhcp is False)
+        self.rb_dns_auto.setChecked(state.dns_dhcp is not False)
         self.dns_preset.setCurrentIndex(0)
-        self._update_enabled()
+        for field, value in ((self.ip, state.ip), (self.netmask, state.mask), (self.gw, state.gateway),
+                             (self.dns1, state.dns), (self.dns2, state.dns)):
+            field.setPlaceholderText("nezjištěno" if value is None else "prázdné = žádná hodnota")
+        self._loading = False
+        self._set_busy(False)
 
     def _fill_profiles(self) -> None:
         cur = self.profiles.currentText()
@@ -222,11 +236,15 @@ class IpConfigDialog(QDialog):
     # ------------------------------------------------------------------ formulář
     def _update_enabled(self) -> None:
         static = self.rb_static.isChecked()
-        for w in (self.ip, self.mask, self.gw):
+        for w in (self.ip, self.netmask, self.gw):
             w.setEnabled(static)
         dns_static = self.rb_dns_static.isChecked()
         for w in (self.dns1, self.dns2, self.dns_preset):
             w.setEnabled(dns_static)
+        for group in self._form_groups:
+            group.setEnabled(not self._busy)
+        for widget in self.profile_controls:
+            widget.setEnabled(not self._busy)
         self._live_validate()
 
     def _apply_dns_preset(self, i: int) -> None:
@@ -237,15 +255,22 @@ class IpConfigDialog(QDialog):
 
     def settings(self) -> IpSettings:
         return IpSettings(iface=self.adapter.currentData() or "", dhcp=self.rb_dhcp.isChecked(),
-                          ip=self.ip.text().strip(), mask=self.mask.text().strip() or "24",
+                          ip=self.ip.text().strip(), mask=self.netmask.text().strip(),
                           gateway=self.gw.text().strip(), dns_dhcp=self.rb_dns_auto.isChecked(),
-                          dns=[self.dns1.text().strip(), self.dns2.text().strip()])
+                          dns=[d.strip() for field in (self.dns1, self.dns2) for d in field.text().split(",")])
 
     def _live_validate(self) -> tuple[list[str], list[str]]:
         errs, warns = self.settings().validate()
-        html = "".join(f"<div style='color:#ff6b78'>✖ {e}</div>" for e in errs)
-        html += "".join(f"<div style='color:#ffaa2b'>⚠ {w}</div>" for w in warns)
-        self.msg.setText(html)
+        if self._loaded is None:
+            errs.append("Aktuální nastavení dosud není načtené")
+        elif self._loaded.unknown:
+            errs.append("Nezjištěno: " + ", ".join(self._loaded.unknown) + ". Nastavení nelze bezpečně použít.")
+        if self._loaded is not None:
+            errs.extend(self._loaded.apply_blockers)
+        html = "".join(f"<div style='color:#ff6b78'>✖ {escape(e)}</div>" for e in errs)
+        html += "".join(f"<div style='color:#ffaa2b'>⚠ {escape(w)}</div>" for w in warns)
+        if not self._busy:
+            self.msg.setText(html)
         self.btn_apply.setEnabled(not errs and not self._busy)
         return errs, warns
 
@@ -259,12 +284,12 @@ class IpConfigDialog(QDialog):
         self.rb_dhcp.setChecked(s.dhcp)
         self.rb_static.setChecked(not s.dhcp)
         self.ip.setText(s.ip)
-        self.mask.setText(s.mask)
+        self.netmask.setText(s.mask)
         self.gw.setText(s.gateway)
         self.rb_dns_auto.setChecked(s.dns_dhcp)
         self.rb_dns_static.setChecked(not s.dns_dhcp)
         self.dns1.setText(s.dns[0] if s.dns else "")
-        self.dns2.setText(s.dns[1] if len(s.dns) > 1 else "")
+        self.dns2.setText(", ".join(s.dns[1:]))
         self._update_enabled()
 
     def _save_profile(self) -> None:
@@ -293,19 +318,21 @@ class IpConfigDialog(QDialog):
 
     # ------------------------------------------------------------------ použití
     def _set_busy(self, busy: bool, text: str = "") -> None:
-        self._busy = busy
-        self.btn_apply.setEnabled(not busy)
-        self.btn_apply.setText("Pracuji…" if busy else "Použít")
+        self._busy = busy or self._applying
+        self.adapter.setEnabled(not self._busy or (self._loading and not self._applying))
+        self.btn_apply.setText("Pracuji…" if self._busy else "Použít")
+        self._update_enabled()
         if text:
             self.msg.setText(f"<div style='color:#38d9ff'>{text}</div>")
 
     def _apply(self) -> None:
+        if self._busy:
+            return
         s = self.settings()
         errs, warns = self._live_validate()
         if errs:
             return
-        info = self._info(s.iface)
-        own = info.ipv4 if info else ()
+        own = (self._loaded.ip,) if self._loaded else ()
         if not s.dhcp and s.ip not in own:
             self._set_busy(True, f"Kontroluji, zda adresa {s.ip} není v síti obsazená…")
             pinger = self.ctrl.pinger
@@ -315,8 +342,23 @@ class IpConfigDialog(QDialog):
             self._confirm(s, warns, False)
 
     def _confirm(self, s: IpSettings, warns: list[str], occupied: bool) -> None:
+        if self._applying:
+            return
         self._set_busy(False)
-        text = s.summary()
+        if self._loaded is None or self._loaded.unknown or self._loaded.apply_blockers \
+                or s.iface != self.adapter.currentData():
+            return
+        text = (f"Karta: {s.iface}\n\nAktuální stav:\n{self._loaded.summary()}"
+                f"\n\nNavržený stav:\n{s.summary()}")
+        before = self._loaded
+        old_prefix = f"/{parse_mask(before.mask)}" if before.mask else "žádný"
+        new_prefix = "automaticky (DHCP)" if s.dhcp else f"/{s.prefix}"
+        old_dns = ", ".join(before.dns or ()) or "žádné"
+        new_dns = "automaticky" if s.dns_dhcp else ", ".join(s.dns_list)
+        text += (f"\n\nPorovnání:\nPrefix: {old_prefix} → {new_prefix}"
+                 f"\nBrána: {before.gateway or 'žádná'} → "
+                 f"{'automaticky (DHCP)' if s.dhcp else s.gateway or 'žádná'}"
+                 f"\nDNS: {old_dns} → {new_dns}")
         if occupied:
             text += f"\n\n⚠ Adresa {s.ip} už v síti odpovídá na ping – pravděpodobně je obsazená jiným zařízením!"
         if warns:
@@ -325,15 +367,19 @@ class IpConfigDialog(QDialog):
         box = QMessageBox(QMessageBox.Icon.Warning if occupied else QMessageBox.Icon.Question,
                           "Použít nastavení sítě", text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                           self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
         box.setDefaultButton(QMessageBox.StandardButton.No)
         if box.exec() != QMessageBox.StandardButton.Yes:
             self._live_validate()
             return
+        self._applying = True
         self._set_busy(True, "Nastavuji síťovou kartu… (potvrďte dotaz správce)")
         self.ctrl.apply_ip(s, self._done)
 
     def _done(self, res) -> None:
         ok, out = res if isinstance(res, tuple) else (False, str(res))
+        self._applying = False
+        self._loaded = None if ok else self._loaded
         self._set_busy(False)
         if ok:
             self.msg.setText("<div style='color:#3dff6e'>✔ Nastavení bylo použito. Síťové údaje se za chvíli "

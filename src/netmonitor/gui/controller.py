@@ -183,7 +183,18 @@ class Controller(QObject):
 
     def apply_ip(self, settings, done: Callable[[tuple], None]) -> None:
         """Použije nastavení IP na pozadí (UAC / polkit / heslo správce), pak obnoví síťové údaje."""
+        from copy import deepcopy
+
         from .. import platform as plat
+
+        if "ip-apply" in self._busy:
+            done((False, "Probíhá jiná změna IP"))
+            return
+        settings = deepcopy(settings)
+        errors, _ = settings.validate()
+        if errors:
+            done((False, "\n".join(errors)))
+            return
 
         def job():
             try:

@@ -47,9 +47,14 @@ class IpSettings:
 
     @classmethod
     def from_profile(cls, iface: str, p: dict) -> "IpSettings":
+        dns = p.get("dns") or []
+        if isinstance(dns, str):
+            dns = [dns]
+        elif not isinstance(dns, (list, tuple)):
+            dns = []
         return cls(iface=iface, dhcp=bool(p.get("dhcp", True)), ip=str(p.get("ip", "")),
                    mask=str(p.get("mask", "255.255.255.0")), gateway=str(p.get("gateway", "")),
-                   dns_dhcp=bool(p.get("dns_dhcp", True)), dns=[str(x) for x in (p.get("dns") or [])][:2])
+                   dns_dhcp=bool(p.get("dns_dhcp", True)), dns=[str(x) for x in dns[:8]])
 
     # -- validace ---------------------------------------------------------
     def validate(self) -> tuple[list[str], list[str]]:
