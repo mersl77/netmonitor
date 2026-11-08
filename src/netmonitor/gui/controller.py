@@ -9,6 +9,9 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from copy import copy
+from dataclasses import replace
+from threading import Lock
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -66,6 +69,13 @@ class Controller(QObject):
         self.gateway_snapshot: TargetSnapshot | None = None
         self.snapshots: dict[str, TargetSnapshot] = {}
         self._last_wan_ok = False
+        self._wan_generation = 0
+        self._wan_inflight_generation: int | None = None
+        self._wan_checked_generation: int | None = None
+        self._wan_pending: bool | None = None   # sloučený refresh; hodnota = force_isp
+        self._wan_save_lock = Lock()
+        self._wan_save_seq = 0
+        self._wan_saved_seq = 0
 
         self._save_timer = QTimer(self, singleShot=True, interval=600, timeout=self._save_now)
         self._eval_timer = QTimer(self, singleShot=True, interval=400, timeout=self._evaluate)
@@ -130,8 +140,13 @@ class Controller(QObject):
                 self._handle_engine(key, res)
             return
         self._busy.discard(key)
+        if key == "wan":
+            self._wan_inflight_generation = None
         if done and not self._stopping and not isinstance(res, Exception):
             done(res)
+        if key == "wan" and self._wan_pending is not None and not self._stopping:
+            force_isp, self._wan_pending = self._wan_pending, None
+            self.refresh_wan(force_isp=force_isp)
 
     def _db(self, fn: Callable[[], Any]) -> None:
         """Jednorázový zápis do DB na pozadí (unikátní klíč – nikdy se nezahodí)."""
@@ -152,6 +167,8 @@ class Controller(QObject):
                        old.network.isp_detection, old.network.isp_provider) != \
                       (self.cfg.network.adapter_auto, self.cfg.network.adapter_name, self.cfg.network.external_api,
                        self.cfg.network.isp_detection, self.cfg.network.isp_provider)
+        if net_changed:
+            self._wan_generation += 1
         self._apply_targets()
         if net_changed:
             self.refresh_network()
@@ -174,9 +191,15 @@ class Controller(QObject):
         gw = self.network.active.gateway if self.network and self.network.active else None
         if self.cfg.network.gateway_probe and gw:
             targets.append(PingTarget(name="Brána", host=gw, interval_s=5, timeout_s=1, retries=3, id=GATEWAY_ID))
+        previous = self.engine.snapshots()
         self.engine.set_targets(targets)
-        ids = {t.id for t in self.cfg.real_targets()}
-        self.snapshots = {k: v for k, v in self.snapshots.items() if k in ids}
+        for tid, snap in previous.items():
+            if not self.engine.is_current(tid, snap.generation):
+                self.notifier.forget_target(tid)
+        self.snapshots = {k: v for k, v in self.snapshots.items()
+                          if self.engine.is_current(k, v.generation)}
+        if self.gateway_snapshot and not self.engine.is_current(GATEWAY_ID, self.gateway_snapshot.generation):
+            self.gateway_snapshot = None
         self._run_bg("targets-db", lambda: self.history.upsert_targets(self.cfg.real_targets()))
         self.targets_changed.emit()
         self._eval_timer.start()
@@ -211,6 +234,8 @@ class Controller(QObject):
 
     # ------------------------------------------------------------------ engine callbacks (worker vlákna!)
     def _engine_result(self, snap: TargetSnapshot, r: PingResult) -> None:
+        if not self.engine.is_current(snap.target_id, snap.generation):
+            return
         if snap.target_id != GATEWAY_ID:
             self.history.record(snap.target_id, r)
         self._deliver.emit(("__result__", None), (snap, r))
@@ -224,6 +249,8 @@ class Controller(QObject):
     def _handle_engine(self, key: str, payload) -> bool:
         if key == "__result__":
             snap, r = payload
+            if not self.engine.is_current(snap.target_id, snap.generation):
+                return True
             if snap.target_id == GATEWAY_ID:
                 self.gateway_snapshot = snap
             else:
@@ -235,6 +262,8 @@ class Controller(QObject):
             return True
         if key == "__transition__":
             tr: Transition = payload
+            if not self.engine.is_current(tr.target_id, tr.generation):
+                return True
             if tr.target_id != GATEWAY_ID:
                 self.notifier.on_target_transition(tr)
                 self._db(lambda: self.history.add_event(
@@ -262,6 +291,7 @@ class Controller(QObject):
                 log.info("Změna sítě: %s -> %s", old.signature(), snap.signature())
                 self.resolver.clear()
                 self.engine.reschedule_all()
+                self._wan_generation += 1
                 self.refresh_wan()
             old_gw = old.active.gateway if old and old.active else None
             new_gw = snap.active.gateway if snap.active else None
@@ -272,26 +302,56 @@ class Controller(QObject):
         self._eval_timer.start()
 
     def refresh_wan(self, force_isp: bool = False) -> None:
-        n = self.cfg.network
+        n = replace(self.cfg.network)
         if not n.external_api:
             self.wan_updated.emit(self.wan_info_dict(disabled=True))
             return
+        if "wan" in self._busy:
+            if force_isp or self._wan_inflight_generation != self._wan_generation:
+                self._wan_pending = bool(self._wan_pending or force_isp)
+            return
+        generation = self._wan_generation
+        self._wan_inflight_generation = generation
+        # Worker nesmí zapsat cache/starý WAN stav ještě před kontrolou generace v GUI.
+        wan = copy(self.wan)
+        wan.isp_cache = self.wan.isp_cache.copy()
+        wan.state_file = None
 
         def job():
             r = fetch_wan_ip()
             isp = None
-            if r.ip and n.isp_detection:
+            if (generation == self._wan_generation and self.cfg.network.external_api
+                    and r.ip and n.isp_detection):
                 if force_isp:
-                    self.wan.isp_cache.pop(r.ip, None)
-                isp = self.wan.isp_for(r.ip, n.isp_provider, n.isp_cache_hours * 3600)
-            return r, isp
-        self._run_bg("wan", job, self._on_wan)
+                    wan.isp_cache.pop(r.ip, None)
+                isp = wan.isp_for(r.ip, n.isp_provider, n.isp_cache_hours * 3600)
+            return r, isp, wan.isp_cache
+        self._run_bg("wan", job, lambda res: self._on_wan(res, generation))
 
-    def _on_wan(self, res) -> None:
-        r, isp = res
+    def _on_wan(self, res, generation: int) -> None:
+        if generation != self._wan_generation or not self.cfg.network.external_api:
+            return
+        r, isp, cache = res
+        cache_changed = cache != self.wan.isp_cache
+        self.wan.isp_cache = cache
         self._last_wan_ok = bool(r.ip)
+        self._wan_checked_generation = generation
         old = self.wan.current
-        changed = self.wan.update(r)
+        changed = self.wan.update(r, persist=False)
+        if cache_changed or old != self.wan.current:
+            # Oddělený snapshot pro disk; starší zápis nesmí přepsat novější revizi.
+            state = copy(self.wan)
+            state.isp_cache = self.wan.isp_cache.copy()
+            self._wan_save_seq += 1
+            seq = self._wan_save_seq
+
+            def save():
+                with self._wan_save_lock:
+                    if seq > self._wan_saved_seq:
+                        state.save()
+                        self._wan_saved_seq = seq
+
+            self._run_bg(f"wan-save-{seq}", save)
         if r.ip:
             self.isp = isp if self.cfg.network.isp_detection else None
         if changed and r.ip:
@@ -301,6 +361,7 @@ class Controller(QObject):
         self._eval_timer.start()
 
     def wan_info_dict(self, disabled: bool = False) -> dict:
+        disabled = disabled or not self.cfg.network.external_api
         return {"disabled": disabled, "ip": None if disabled else self.wan.current,
                 "previous": self.wan.previous, "changed_at": self.wan.changed_at,
                 "last_check": self.wan.last_check, "error": self.wan.last_error,
@@ -324,6 +385,8 @@ class Controller(QObject):
             if not t.enabled:
                 continue
             s = self.snapshots.get(t.id)
+            if s and not self.engine.is_current(t.id, s.generation):
+                s = None
             if not self.is_internet_target(t, s):
                 continue
             ups.append(s.up if s else None)
@@ -331,9 +394,12 @@ class Controller(QObject):
                 rtts.append(s.last.rtt_ms)
             if s and s.loss_pct is not None and s.ok_count + s.fail_count >= 5:
                 losses.append(s.loss_pct)
-        gw = self.gateway_snapshot.up if self.gateway_snapshot else None
+        gs = self.gateway_snapshot
+        gw = gs.up if (self.cfg.network.gateway_probe and gs
+                       and self.engine.is_current(GATEWAY_ID, gs.generation)) else None
         http_ok = None
-        if self.cfg.network.external_api and self.wan.last_check and time.time() - self.wan.last_check < 90:
+        if (self.cfg.network.external_api and self._wan_checked_generation == self._wan_generation
+                and self.wan.last_check and time.time() - self.wan.last_check < 90):
             http_ok = self._last_wan_ok
         ev = evaluate(ConnInputs(
             iface_up=None if net is None else bool(a and a.is_up and a.ipv4),

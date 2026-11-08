@@ -319,7 +319,7 @@ class PingPanel(QWidget):
             row.target, row.index = t, stripe
             stripe += 1
             snap = snapshots.get(t.id)
-            if snap is not None and snap.host != t.host:
+            if snap is not None and (not t.enabled or snap.host != t.host):
                 snap = None
             row.set_snapshot(snap)
             if changed:
@@ -327,7 +327,7 @@ class PingPanel(QWidget):
 
     def update_snapshot(self, snap: TargetSnapshot) -> None:
         row = self.rows.get(snap.target_id)
-        if row:
+        if row and row.target.enabled and row.target.host == snap.host:
             row.set_snapshot(snap)
 
     def row_at(self, global_pos) -> PingRow | None:
