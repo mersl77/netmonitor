@@ -1,6 +1,7 @@
 """Wake-on-LAN (magic packet) a zjištění MAC adresy z ARP tabulky systému.
 
-Magic packet = 6× 0xFF + 16× MAC adresa, posláno UDP broadcastem (porty 9 a 7).
+Magic packet = 6× 0xFF + 16× MAC adresa, posláno UDP broadcastem na zvolený port.
+Bez explicitního portu zůstává původní odesílání na porty 9 a 7.
 Posílá se na 255.255.255.255 i na broadcast podsítě aktivní karty a socket se váže na IP
 této karty – na počítači s více síťovkami tak paket odejde správným rozhraním.
 """
@@ -11,6 +12,7 @@ import re
 import socket
 import sys
 from pathlib import Path
+from dataclasses import dataclass
 
 from ..utils.proc import run_cmd
 
@@ -52,17 +54,29 @@ def directed_broadcast(ip: str, mask: str) -> str | None:
     return str(net.broadcast_address) if net.prefixlen < 31 else None
 
 
+def validate_destination(mac: str, broadcast: str | None, port: int | None) -> None:
+    parse_mac(mac)
+    if broadcast:
+        try:
+            ipaddress.IPv4Address(broadcast)
+        except ValueError:
+            raise ValueError("Neplatná broadcast adresa pro WoL; zadejte IPv4 adresu") from None
+    if port is not None and (type(port) is not int or not 1 <= port <= 65535):
+        raise ValueError("Port musí být celé číslo 1–65535")
+
+
 def send(mac_text: str, local_ip: str | None = None, netmask: str | None = None,
-         extra_broadcast: str | None = None) -> list[str]:
+         extra_broadcast: str | None = None, port: int | None = None) -> list[str]:
     """Odešle magic packet. Vrací seznam cílů (adresa:port), kam odešel. Chyba => OSError/ValueError."""
+    validate_destination(mac_text, extra_broadcast, port)
     pkt = magic_packet(parse_mac(mac_text))
+    ports = WOL_PORTS if port is None else (port,)
     targets: list[str] = ["255.255.255.255"]
     if local_ip and netmask:
         b = directed_broadcast(local_ip, netmask)
         if b and b not in targets:
             targets.append(b)
     if extra_broadcast:
-        ipaddress.IPv4Address(extra_broadcast)        # validace
         if extra_broadcast not in targets:
             targets.append(extra_broadcast)
     sent = []
@@ -74,13 +88,53 @@ def send(mac_text: str, local_ip: str | None = None, netmask: str | None = None,
             except OSError:
                 pass
         for addr in targets:
-            for port in WOL_PORTS:
-                s.sendto(pkt, (addr, port))
-                sent.append(f"{addr}:{port}")
+            for destination_port in ports:
+                s.sendto(pkt, (addr, destination_port))
+                sent.append(f"{addr}:{destination_port}")
     return sent
 
 
 # ---------------------------------------------------------------------------- ARP
+
+@dataclass(frozen=True)
+class Neighbor:
+    ip: str
+    mac: str
+
+
+def parse_neighbors(text: str) -> list[Neighbor]:
+    """IPv4 sousedé z ip neigh, /proc/net/arp, arp -a (i CZ) nebo arp -an; bez DNS."""
+    found: list[Neighbor] = []
+    for line in text.splitlines():
+        if re.search(r"\b(INCOMPLETE|FAILED)\b", line, re.IGNORECASE):
+            continue
+        ip = re.search(r"(?<![\w.:])(?:\d{1,3}\.){3}\d{1,3}(?![\w.:])", line)
+        mac = _MAC_IN_TEXT.search(line)
+        if not ip or not mac:
+            continue
+        try:
+            address = ipaddress.IPv4Address(ip.group())
+            hardware = parse_mac(mac.group(1))
+        except ValueError:
+            continue
+        if address.is_multicast or address.is_unspecified or hardware[0] & 1:
+            continue
+        neighbor = Neighbor(str(address), format_mac(hardware))
+        if neighbor not in found:
+            found.append(neighbor)
+    return found
+
+
+def list_neighbors() -> list[Neighbor]:
+    """Čte pouze již známé sousedy; neosvěžuje ARP ani neskenuje podsíť."""
+    if sys.platform.startswith("linux"):
+        out = run_cmd(["ip", "neigh", "show"], timeout=3) or ""
+        neighbors = parse_neighbors(out)
+        if neighbors:
+            return neighbors
+        return parse_neighbors(Path("/proc/net/arp").read_text())
+    args = ["arp", "-an"] if sys.platform == "darwin" else ["arp", "-a"]
+    return parse_neighbors(run_cmd(args, timeout=3, c_locale=False) or "")
 
 def parse_arp_output(text: str, ip: str) -> str | None:
     """Najde MAC u dané IP ve výstupu `arp -a` (Windows, libovolný jazyk) / `arp -n` (macOS) / /proc/net/arp."""
