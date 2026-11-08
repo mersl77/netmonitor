@@ -1,7 +1,8 @@
 """Konfigurace aplikace – dataclassy, validace, JSON load/save, import/export.
 
 Konfigurace je lokální JSON (schema_version). Neznámé klíče jsou ignorovány,
-chybějící doplněny výchozími hodnotami, nesmyslné hodnoty oříznuty do mezí.
+chybějící a chybně typovaná pole doplněna výchozími hodnotami, číselné hodnoty
+oříznuty do mezí. Neplatné položky seznamu cílů se vynechávají.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+from ..utils.local_json import quarantine_json, read_json_object
 from ..utils.paths import config_dir
 from ..utils.validation import host_kind
 
@@ -35,7 +37,7 @@ def new_id() -> str:
 def _clamp(v: Any, lo: float, hi: float, default: float) -> float:
     try:
         f = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     if f != f:  # NaN
         return default
@@ -213,20 +215,24 @@ class AppConfig:
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "AppConfig":
+        if data is not None and not isinstance(data, dict):
+            raise ValueError("Konfigurace musí být JSON objekt")
         data = migrate_dict(dict(data or {}))
         cfg = cls()
-        cfg.general = _load_dc(GeneralConfig, data.get("general"))
-        ap = data.get("appearance") or {}
-        cfg.appearance = _load_dc(AppearanceConfig, ap)
-        cfg.appearance.colors = _load_dc(StatusColors, ap.get("colors") if isinstance(ap, dict) else None)
-        cfg.network = _load_dc(NetworkConfig, data.get("network"))
-        pg = data.get("ping") or {}
-        cfg.ping = _load_dc(PingConfig, pg)
-        cfg.ping.thresholds = _load_dc(Thresholds, pg.get("thresholds") if isinstance(pg, dict) else None)
-        raw_targets = pg.get("targets") if isinstance(pg, dict) and "targets" in pg else None
-        cfg.ping.targets = default_targets() if raw_targets is None else targets_from_list(raw_targets)
-        cfg.notifications = _load_dc(NotificationConfig, data.get("notifications"))
-        cfg.history = _load_dc(HistoryConfig, data.get("history"))
+        cfg.general = _load_dc(GeneralConfig, data.get("general", {}), "general")
+        ap = data.get("appearance")
+        cfg.appearance = _load_dc(AppearanceConfig, data.get("appearance", {}), "appearance")
+        cfg.appearance.colors = _load_dc(StatusColors, ap.get("colors", {}) if isinstance(ap, dict) else {},
+                                         "appearance.colors")
+        cfg.network = _load_dc(NetworkConfig, data.get("network", {}), "network")
+        pg = data.get("ping")
+        cfg.ping = _load_dc(PingConfig, data.get("ping", {}), "ping")
+        cfg.ping.thresholds = _load_dc(Thresholds, pg.get("thresholds", {}) if isinstance(pg, dict) else {},
+                                      "ping.thresholds")
+        raw_targets = pg.get("targets") if isinstance(pg, dict) else None
+        cfg.ping.targets = targets_from_list(raw_targets) if isinstance(raw_targets, list) else default_targets()
+        cfg.notifications = _load_dc(NotificationConfig, data.get("notifications", {}), "notifications")
+        cfg.history = _load_dc(HistoryConfig, data.get("history", {}), "history")
         return cfg.normalized()
 
     def normalized(self) -> "AppConfig":
@@ -243,7 +249,14 @@ class AppConfig:
         n.isp_cache_hours = int(_clamp(n.isp_cache_hours, 1, 24 * 30, 24))
         n.isp_provider = n.isp_provider if n.isp_provider in ("ipinfo", "ripestat") else "ipinfo"
         from .ipconfig import sanitize_profiles
-        n.ip_profiles = sanitize_profiles(n.ip_profiles)
+        profiles = []
+        raw_profiles = n.ip_profiles if isinstance(n.ip_profiles, list) else []
+        for index, profile in enumerate(raw_profiles[:50]):
+            try:
+                profiles.extend(sanitize_profiles([profile]))
+            except (TypeError, ValueError):
+                log.warning("Neplatné pole network.ip_profiles[%d] – profil vynechávám", index)
+        n.ip_profiles = profiles
         p = self.ping
         p.max_concurrent = int(_clamp(p.max_concurrent, 1, 128, 16))
         t = p.thresholds
@@ -269,13 +282,31 @@ class AppConfig:
         return [t for t in self.ping.targets if not t.is_section]
 
 
-def _load_dc(cls, data):
+def _valid_field_type(default: Any, value: Any) -> bool:
+    # Číselné meze řeší normalized(); x/y musí vejít do Qt signed int.
+    if default is None:
+        return value is None or (type(value) is int and -(2**31) <= value < 2**31)
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, (int, float)):
+        return type(value) in (int, float) and -float("inf") < value < float("inf")
+    return isinstance(value, type(default))
+
+
+def _load_dc(cls, data, prefix: str):
     obj = cls()
     if not isinstance(data, dict):
+        log.warning("Neplatné pole %s – používám výchozí hodnotu", prefix)
         return obj
     for f in fields(cls):
-        if f.name in data and not hasattr(getattr(obj, f.name), "__dataclass_fields__"):
-            setattr(obj, f.name, data[f.name])
+        default = getattr(obj, f.name)
+        if f.name not in data or hasattr(default, "__dataclass_fields__"):
+            continue
+        value = data[f.name]
+        if not _valid_field_type(default, value):
+            log.warning("Neplatné pole %s.%s – používám výchozí hodnotu", prefix, f.name)
+            continue
+        setattr(obj, f.name, value)
     return obj
 
 
@@ -283,13 +314,22 @@ def targets_from_list(items: Any) -> list[PingTarget]:
     out: list[PingTarget] = []
     seen_ids: set[str] = set()
     if not isinstance(items, list):
+        log.warning("Neplatné pole ping.targets – seznam cílů nelze načíst")
         return out
     names = {f.name for f in fields(PingTarget)}
-    for it in items:
+    defaults = PingTarget(name="", host="")
+    for index, it in enumerate(items):
         if not isinstance(it, dict):
+            log.warning("Neplatné pole ping.targets[%d] – položku vynechávám", index)
+            continue
+        invalid_fields = [k for k in names if k in it and not _valid_field_type(getattr(defaults, k), it[k])]
+        if invalid_fields:
+            for name in invalid_fields:
+                log.warning("Neplatné pole ping.targets[%d].%s – položku vynechávám", index, name)
             continue
         is_section = it.get("kind") == "section"
         if not is_section and not it.get("host"):
+            log.warning("Neplatné pole ping.targets[%d].host – položku vynechávám", index)
             continue
         kw = {k: v for k, v in it.items() if k in names}
         kw.setdefault("name", it.get("host") or "Sekce")
@@ -357,18 +397,14 @@ def default_config_path() -> Path:
 
 def load_config(path: Path | None = None) -> AppConfig:
     path = path or default_config_path()
-    if not path.exists():
-        return AppConfig.from_dict({})
     try:
-        with open(path, encoding="utf-8") as f:
-            return AppConfig.from_dict(json.load(f))
-    except (OSError, json.JSONDecodeError, TypeError) as e:
-        log.error("Konfigurace %s je poškozená (%s) – používám výchozí, původní zálohuji", path, e)
-        try:
-            path.replace(path.with_suffix(".broken.json"))
-        except OSError:
-            pass
+        data = read_json_object(path)
+    except FileNotFoundError:
         return AppConfig.from_dict({})
+    except (OSError, ValueError) as e:
+        quarantine_json(path, e)
+        return AppConfig.from_dict({})
+    return AppConfig.from_dict(data)
 
 
 def atomic_write_json(path: Path, data: Any) -> None:
@@ -389,7 +425,18 @@ def atomic_write_json(path: Path, data: Any) -> None:
 
 
 def save_config(cfg: AppConfig, path: Path | None = None) -> None:
-    atomic_write_json(path or default_config_path(), cfg.normalized().to_dict())
+    path = path or default_config_path()
+    # Když při load selhalo odložení (např. oprávnění), pozdější autosave
+    # nesmí originál přepsat. Kontrolujeme jen čitelnost JSON objektu,
+    # nikoli typy jeho polí. Chrání i soubor poškozený až za běhu aplikace.
+    try:
+        read_json_object(path)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        if not quarantine_json(path, e):
+            raise OSError(f"Konfiguraci {path} nelze uložit bez zálohy původního souboru") from e
+    atomic_write_json(path, cfg.normalized().to_dict())
 
 
 def export_config(cfg: AppConfig, path: Path) -> None:

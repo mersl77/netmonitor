@@ -43,7 +43,10 @@ def test_corrupted_file_is_backed_up(tmp_path):
     p.write_text("{ broken", encoding="utf-8")
     cfg = c.load_config(p)
     assert len(cfg.ping.targets) == 10
-    assert (tmp_path / "config.broken.json").exists()
+    backups = list(tmp_path.glob("config.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{ broken"
+    assert not p.exists()
 
 
 def test_values_are_clamped_and_unknown_keys_ignored():
