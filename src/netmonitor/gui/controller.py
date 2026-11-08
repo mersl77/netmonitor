@@ -1,14 +1,15 @@
 """Propojení jádra s Qt: plánování úloh na pozadí, signály pro UI, ukládání konfigurace.
 
-Hlavní Qt vlákno nikdy neprovádí síťové ani diskové operace – vše běží
-v pozadí a výsledky se do UI doručují queued signály.
+Za běhu probíhá I/O v pozadí a výsledky se do UI doručují queued signály.
+Při ukončení se poslední konfigurace uloží synchronně před rušením úloh.
 """
 from __future__ import annotations
 
 import logging
 import sys
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -24,6 +25,7 @@ from ..core.ping_engine import PingResult, Resolver, select_pinger
 from ..core.wan_info import WanState, fetch_wan_ip
 from ..utils.paths import data_dir
 from ..utils.validation import host_kind, is_private_address
+from ..utils.workers import DaemonPool
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ GATEWAY_ID = "__gateway__"
 
 
 class Controller(QObject):
+    shutdown_started = Signal()
     target_result = Signal(object, object)      # TargetSnapshot, PingResult
     targets_changed = Signal()
     network_updated = Signal(object)            # NetworkSnapshot
@@ -44,10 +47,15 @@ class Controller(QObject):
         super().__init__(parent)
         self.cfg = cfg
         self.config_path = config_path
-        self._bg = ThreadPoolExecutor(max_workers=3, thread_name_prefix="bg")
+        self._bg = DaemonPool(max_workers=3, thread_name_prefix="bg")
         self._deliver.connect(self._on_deliver)
         self._busy: set[str] = set()
         self._stopping = False
+        self._ip_future: Future | None = None
+        self._save_lock = threading.Lock()
+        self._save_generation = 0
+        self._saved_generation = 0
+        self._history_jobs: list[Future] = []
 
         self.resolver = Resolver()
         self.pinger = select_pinger()
@@ -86,25 +94,59 @@ class Controller(QObject):
         self._purge_timer.start()
         self.refresh_network()
         self.refresh_wan()
-        self._run_bg("purge", lambda: self.history.purge(self.cfg.history.retention_days))
+        self._run_history("purge", lambda: self.history.purge(self.cfg.history.retention_days))
 
     def shutdown(self) -> None:
         if self._stopping:
             return
+        started = time.monotonic()
+        deadline = started + 2.0
+        log.info("Ukončuji…")
         self._stopping = True
+        self.shutdown_started.emit()
         for t in (self._net_timer, self._wan_timer, self._flush_timer, self._notify_timer, self._purge_timer,
-                  self._eval_timer):
+                  self._eval_timer, self._save_timer):
             t.stop()
-        if self._save_timer.isActive():
-            self._save_timer.stop()
-            self._save_now()
-        self.engine.stop()
-        self._bg.shutdown(wait=True, cancel_futures=True)
-        self.history.close()
-        log.info("Monitoring korektně ukončen")
+        try:
+            self._write_config(self.cfg.copy(), self._save_generation)
+        except Exception:  # noqa: BLE001 – i při chybě disku dokončit ukončení
+            log.exception("Poslední konfiguraci se nepodařilo uložit")
+        # Rozběhnutou sekvenci změny IP nikdy nepřerušujeme. Čekáme pouze na
+        # její vlastní konec (platformní timeouty), i kdyby překročila 3 s.
+        ip = self._ip_future
+        if ip is not None and not ip.cancel() and not ip.done():
+            log.info("Čekám na dokončení probíhající změny IP…")
+            try:
+                ip.result()
+            except Exception:  # noqa: BLE001 – úklid musí proběhnout i při selhání Future
+                log.exception("Čekání na změnu IP selhalo")
+        self._bg.shutdown(wait=False, cancel_futures=True)
+
+        def close_history():
+            # Síťové dotazy mohou zůstat viset, ale k DB již nepřistoupí.
+            # Běžící DB úlohy musejí skončit před uzavřením jejich spojení.
+            for future in self._history_jobs:
+                try:
+                    future.result()
+                except Exception:  # zrušená / již zalogovaná úloha
+                    pass
+            try:
+                self.history.close()
+            except Exception:  # noqa: BLE001
+                log.exception("Uzavření historie selhalo")
+
+        cleanup = threading.Thread(target=close_history, daemon=True, name="history-close")
+        cleanup.start()
+        # Historie má čas na flush souběžně s čekáním na blokované pingy/DNS.
+        self.engine.stop(timeout=max(0, deadline - time.monotonic()))
+        cleanup.join(max(0, deadline - time.monotonic()))
+        if cleanup.is_alive():
+            log.warning("Historie se ještě uzavírá na pozadí")
+        log.info("Monitoring ukončen za %.3f s", time.monotonic() - started)
 
     # ------------------------------------------------------------------ pozadí
-    def _run_bg(self, key: str, fn: Callable[[], Any], done: Callable[[Any], None] | None = None) -> None:
+    def _run_bg(self, key: str, fn: Callable[[], Any],
+                done: Callable[[Any], None] | None = None) -> Future | None:
         """Spustí fn na pozadí; stejný klíč nikdy neběží dvakrát současně."""
         if self._stopping or key in self._busy:
             return
@@ -116,11 +158,13 @@ class Controller(QObject):
             except Exception as e:  # noqa: BLE001
                 log.exception("Úloha %s selhala", key)
                 res = e
-            self._deliver.emit((key, done), res)
+            if not self._stopping:
+                self._deliver.emit((key, done), res)
         try:
-            self._bg.submit(job)
+            return self._bg.submit(job)
         except RuntimeError:
             self._busy.discard(key)
+        return None
 
     @Slot(object, object)
     def _on_deliver(self, meta, res) -> None:
@@ -136,14 +180,27 @@ class Controller(QObject):
     def _db(self, fn: Callable[[], Any]) -> None:
         """Jednorázový zápis do DB na pozadí (unikátní klíč – nikdy se nezahodí)."""
         self._seq = getattr(self, "_seq", 0) + 1
-        self._run_bg(f"db-{self._seq}", fn)
+        self._run_history(f"db-{self._seq}", fn)
+
+    def _run_history(self, key: str, fn: Callable[[], Any]) -> None:
+        future = self._run_bg(key, fn)
+        self._history_jobs = [f for f in self._history_jobs if not f.done()]
+        if future is not None:
+            self._history_jobs.append(future)
 
     # ------------------------------------------------------------------ konfigurace
     def update_config(self, cfg: AppConfig, save: bool = True) -> None:
         old = self.cfg
         self.cfg = cfg.normalized()
-        self.notifier.update_config(self.cfg.notifications)
-        self.history.enabled = self.cfg.history.enabled
+        if old == self.cfg:
+            self.config_changed.emit(self.cfg)
+            return
+        if old.notifications != self.cfg.notifications:
+            self.notifier.update_config(self.cfg.notifications)
+        if old.history.enabled != self.cfg.history.enabled:
+            self.history.enabled = self.cfg.history.enabled
+        if old.ping.max_concurrent != self.cfg.ping.max_concurrent:
+            self.engine.set_max_concurrent(self.cfg.ping.max_concurrent)
         if old.network.refresh_s != self.cfg.network.refresh_s:
             self._net_timer.setInterval(self.cfg.network.refresh_s * 1000)
         if old.network.wan_interval_s != self.cfg.network.wan_interval_s:
@@ -152,22 +209,56 @@ class Controller(QObject):
                        old.network.isp_detection, old.network.isp_provider) != \
                       (self.cfg.network.adapter_auto, self.cfg.network.adapter_name, self.cfg.network.external_api,
                        self.cfg.network.isp_detection, self.cfg.network.isp_provider)
-        self._apply_targets()
+        gateway_changed = old.network.gateway_probe != self.cfg.network.gateway_probe
+        if gateway_changed:
+            self.gateway_snapshot = None
+        if old.real_targets() != self.cfg.real_targets() or gateway_changed:
+            self._apply_targets()
+        else:
+            if old.ping.targets != self.cfg.ping.targets:
+                self.targets_changed.emit()  # změnily se jen nadpisy sekcí
+            if old.ping.thresholds != self.cfg.ping.thresholds:
+                self._eval_timer.start()
         if net_changed:
             self.refresh_network()
             self.refresh_wan(force_isp=True)
         self.config_changed.emit(self.cfg)
         if save:
-            self._save_timer.start()
+            self.schedule_save()
 
     def schedule_save(self) -> None:
         """Uloží konfiguraci (debounce) bez přestavby UI – např. po přesunu okna."""
         if not self._stopping:
+            self._save_generation += 1
             self._save_timer.start()
 
     def _save_now(self) -> None:
+        if self._stopping or self._saved_generation >= self._save_generation:
+            return
         cfg = self.cfg.copy()
-        self._run_bg("save-config", lambda: cfgmod.save_config(cfg, self.config_path))
+        generation = self._save_generation
+
+        def write():
+            try:
+                self._write_config(cfg, generation)
+            except Exception:  # noqa: BLE001 – dirty revize se zkusí znovu při shutdownu
+                log.exception("Zápis konfigurace selhal; revize zůstává neuložená")
+
+        def saved(_res):
+            # Novější požadavek nesmí zmizet ani při selhání staršího zápisu.
+            # Stejnou chybnou revizi neopakujeme bez prodlevy v nekonečné smyčce.
+            if self._save_generation > generation:
+                self._save_now()
+
+        self._run_bg("save-config", write, saved)
+
+    def _write_config(self, cfg: AppConfig, generation: int) -> None:
+        """Serializace atomických zápisů; starší snapshot nesmí přepsat novější."""
+        with self._save_lock:
+            if generation <= self._saved_generation:
+                return
+            cfgmod.save_config(cfg, self.config_path)
+            self._saved_generation = generation
 
     def _apply_targets(self) -> None:
         targets = self.cfg.real_targets()
@@ -177,7 +268,7 @@ class Controller(QObject):
         self.engine.set_targets(targets)
         ids = {t.id for t in self.cfg.real_targets()}
         self.snapshots = {k: v for k, v in self.snapshots.items() if k in ids}
-        self._run_bg("targets-db", lambda: self.history.upsert_targets(self.cfg.real_targets()))
+        self._run_history("targets-db", lambda: self.history.upsert_targets(self.cfg.real_targets()))
         self.targets_changed.emit()
         self._eval_timer.start()
 
@@ -204,22 +295,28 @@ class Controller(QObject):
                 QTimer.singleShot(6000, self.refresh_wan)
                 QTimer.singleShot(2000, self.engine.reschedule_all)
             done(res)
-        self._run_bg("ip-apply", job, finished)
+        if "ip-apply" not in self._busy:
+            self._ip_future = self._run_bg("ip-apply", job, finished)
 
     def test_now(self, target_id: str) -> None:
         self.engine.test_now(target_id)
 
     # ------------------------------------------------------------------ engine callbacks (worker vlákna!)
     def _engine_result(self, snap: TargetSnapshot, r: PingResult) -> None:
+        if self._stopping:
+            return
         if snap.target_id != GATEWAY_ID:
             self.history.record(snap.target_id, r)
         self._deliver.emit(("__result__", None), (snap, r))
 
     def _engine_transition(self, tr: Transition) -> None:
+        if self._stopping:
+            return
         self._deliver.emit(("__transition__", None), tr)
 
     def _engine_resume(self) -> None:
-        self._deliver.emit(("__resume__", None), None)
+        if not self._stopping:
+            self._deliver.emit(("__resume__", None), None)
 
     def _handle_engine(self, key: str, payload) -> bool:
         if key == "__result__":
@@ -360,10 +457,10 @@ class Controller(QObject):
 
     # ------------------------------------------------------------------ periodické
     def _flush_history(self) -> None:
-        self._run_bg("flush", self.history.flush)
+        self._run_history("flush", self.history.flush)
 
     def _purge(self) -> None:
-        self._run_bg("purge", lambda: self.history.purge(self.cfg.history.retention_days))
+        self._run_history("purge", lambda: self.history.purge(self.cfg.history.retention_days))
 
     def _notify_tick(self) -> None:
         for n in self.notifier.tick():

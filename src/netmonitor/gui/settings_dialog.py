@@ -1,5 +1,6 @@
-"""Dialog nastavení. Každá změna se okamžitě promítne do widgetu i monitoringu
-(a s krátkou prodlevou uloží do config.json)."""
+"""Dialog nastavení. Změny se živě promítají do widgetu i monitoringu
+a s krátkou prodlevou uloží do config.json. Posuvníky průhlednosti se slučují po 50 ms.
+"""
 from __future__ import annotations
 
 import logging
@@ -289,6 +290,9 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(theme.DIALOG_QSS)
         self.resize(820, 640)
         self._loading = False
+        self._pending_appearance: dict[str, float] = {}
+        self._appearance_timer = QTimer(self, singleShot=True, interval=50)
+        self._appearance_timer.timeout.connect(self._flush_appearance)
         lay = QVBoxLayout(self)
         self.tabs = QTabWidget()
         lay.addWidget(self.tabs)
@@ -313,12 +317,30 @@ class SettingsDialog(QDialog):
         if self._loading:
             return
         cfg = self.ctrl.cfg.copy()
+        self._appearance_timer.stop()
+        for key, value in self._pending_appearance.items():
+            setattr(cfg.appearance, key, value)
+        self._pending_appearance.clear()
         fn(cfg)
         self._applying = True
         try:
             self.ctrl.update_config(cfg)
         finally:
             self._applying = False
+
+    def _queue_appearance(self, key: str, value: float) -> None:
+        if not self._loading:
+            self._pending_appearance[key] = value
+            if not self._appearance_timer.isActive():
+                self._appearance_timer.start()
+
+    def _flush_appearance(self) -> None:
+        if self._pending_appearance:
+            self._apply(lambda cfg: None)
+
+    def done(self, result: int) -> None:
+        self._flush_appearance()
+        super().done(result)
 
     def _setter(self, section: str, key: str, conv=lambda v: v):
         return lambda v: self._apply(lambda c: setattr(getattr(c, section), key, conv(v)))
@@ -353,6 +375,7 @@ class SettingsDialog(QDialog):
             def later():
                 self._reload_pending = False
                 if self.isVisible() and not self._loading:
+                    self._flush_appearance()
                     self.load()
             QTimer.singleShot(0, later)
 
@@ -471,7 +494,7 @@ class SettingsDialog(QDialog):
 
         def glass_changed(x: int) -> None:
             self.glass_lbl.setText(f"{x} %" + ("  neprůhledné" if x == 0 else "  jen text" if x == 100 else ""))
-            self._apply(lambda c: setattr(c.appearance, "glass_alpha", 1 - x / 100))
+            self._queue_appearance("glass_alpha", 1 - x / 100)
         self.glass.valueChanged.connect(glass_changed)
         gr = QHBoxLayout()
         gr.addWidget(self.glass, 1)
@@ -483,7 +506,7 @@ class SettingsDialog(QDialog):
 
         def opacity_changed(x: int) -> None:
             self.opacity_lbl.setText(f"{x} %")
-            self._apply(lambda c: setattr(c.appearance, "opacity", 1 - x / 100))
+            self._queue_appearance("opacity", 1 - x / 100)
         self.opacity.valueChanged.connect(opacity_changed)
         orow = QHBoxLayout()
         orow.addWidget(self.opacity, 1)
