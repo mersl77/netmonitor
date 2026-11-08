@@ -1,4 +1,4 @@
-"""Malé stavební prvky widgetu: nadpis se září, neonová linka, hodnotový label."""
+"""Společné GUI funkce a malé stavební prvky widgetu: nadpis, linka, hodnotový label."""
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
@@ -6,6 +6,15 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, 
 from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 from . import theme
+
+
+def show_dialog(dialog: QWidget) -> None:
+    """Zobrazí a aktivuje dialog, při minimalizaci zachová ostatní příznaky okna."""
+    if dialog.isMinimized():
+        dialog.setWindowState(dialog.windowState() & ~Qt.WindowState.WindowMinimized)
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
 
 
 class GlowTitle(QWidget):

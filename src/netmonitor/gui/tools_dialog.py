@@ -15,6 +15,7 @@ from ..core.config import PingTarget
 from ..core.ping_engine import Resolver, ping_host
 from . import theme
 from .ping_panel import fmt_rtt
+from .widgets import show_dialog
 
 log = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ def open_traceroute(ctrl, target: PingTarget) -> TracerouteDialog:
         old.deleteLater()                      # rušení v GUI vlákně a až po doběhnutí vlákna
     d = TracerouteDialog(ctrl, target)
     _trace_dialogs.append(d)
-    d.show()
+    show_dialog(d)
     d.start()
     return d
 

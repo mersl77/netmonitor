@@ -14,6 +14,7 @@ from .. import __version__
 from ..core import updater as upd
 from ..utils.paths import data_dir
 from . import theme
+from .widgets import show_dialog
 
 log = logging.getLogger(__name__)
 
@@ -187,9 +188,7 @@ class UpdateDialog(QDialog):
             if not selfinst:
                 self.status.setText("Automatická instalace je dostupná jen v nainstalované verzi pro Windows. "
                                     "Novou verzi stáhněte ze stránky vydání.")
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        show_dialog(self)
 
     def _set_auto(self, on: bool) -> None:
         cfg = self.mgr.ctrl.cfg.copy()

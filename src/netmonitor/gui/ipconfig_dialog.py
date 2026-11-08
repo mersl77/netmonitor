@@ -14,6 +14,7 @@ from ..core.network_info import InterfaceInfo
 from ..core.ping_engine import Resolver, ping_host
 from . import theme
 from .controller import Controller
+from .widgets import show_dialog
 
 log = logging.getLogger(__name__)
 
@@ -142,9 +143,7 @@ class IpConfigDialog(QDialog):
         self._fill_adapters(iface)
         self._fill_profiles()
         self.msg.clear()
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        show_dialog(self)
 
     def _interfaces(self) -> list[InterfaceInfo]:
         net = self.ctrl.network

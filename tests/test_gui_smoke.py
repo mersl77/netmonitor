@@ -20,6 +20,49 @@ def qapp():
     yield app
 
 
+@pytest.mark.parametrize("state", ["normal", "minimized", "maximized", "maximized_minimized"])
+def test_show_dialog_activates_and_restores(qapp, state):
+    """Regrese L29: dialog z tray se musí zvednout, aktivovat a obnovit z minimalizace."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QDialog
+    from netmonitor.gui.widgets import show_dialog
+
+    calls = []
+
+    class Dialog(QDialog):
+        def show(self):
+            calls.append("show")
+            super().show()
+
+        def raise_(self):
+            calls.append("raise")
+            super().raise_()
+
+        def activateWindow(self):
+            calls.append("activate")
+            super().activateWindow()
+
+    d = Dialog()
+    flags = Qt.WindowState.WindowNoState
+    if "maximized" in state:
+        flags |= Qt.WindowState.WindowMaximized
+    if "minimized" in state:
+        flags |= Qt.WindowState.WindowMinimized
+    try:
+        # První otevření, opakované vyvolání i znovuotevření zavřeného dialogu.
+        for close_first in (False, False, True):
+            if close_first:
+                d.close()
+            d.setWindowState(flags)
+            calls.clear()
+            show_dialog(d)
+            assert calls == ["show", "raise", "activate"]
+            assert d.isVisible() and not d.isMinimized()
+            assert bool(d.windowState() & Qt.WindowState.WindowMaximized) == ("maximized" in state)
+    finally:
+        d.close()
+
+
 def pump(sec):
     end = time.monotonic() + sec
     while time.monotonic() < end:
@@ -37,6 +80,50 @@ def ctrl(qapp, tmp_path, monkeypatch):
     c = cmod.Controller(cfg, tmp_path / "config.json", tmp_path / "h.sqlite3")
     yield c
     c.shutdown()
+
+
+@pytest.mark.parametrize("kind", ["history", "ipconfig", "update", "traceroute"])
+def test_dialog_entry_points_use_activation(ctrl, monkeypatch, kind):
+    """Regrese L29: vlastní otevírací metody dialogů používají společnou aktivaci."""
+    from netmonitor.gui import history_dialog, ipconfig_dialog, tools_dialog, updater_ui
+    from netmonitor.gui.widgets import show_dialog
+
+    opened = []
+
+    def activate(dialog):
+        opened.append(dialog)
+        show_dialog(dialog)
+
+    if kind == "history":
+        module = history_dialog
+        d = history_dialog.HistoryDialog(ctrl)
+        open_dialog = d.show_target
+    elif kind == "ipconfig":
+        module = ipconfig_dialog
+        d = ipconfig_dialog.IpConfigDialog(ctrl)
+        open_dialog = d.open_for
+    elif kind == "update":
+        module = updater_ui
+        d = updater_ui.UpdateDialog(updater_ui.UpdateManager(ctrl))
+        open_dialog = d.open_for
+    else:
+        module = tools_dialog
+        monkeypatch.setattr(tools_dialog.TracerouteDialog, "start", lambda _self: None)
+        target = PingTarget(name="Test", host="192.0.2.1")
+        open_dialog = lambda: tools_dialog.open_traceroute(ctrl, target)
+    monkeypatch.setattr(module, "show_dialog", activate)
+    try:
+        open_dialog()
+        opened[-1].showMinimized()
+        open_dialog()
+        assert len(opened) == 2
+        assert opened[-1].isVisible() and not opened[-1].isMinimized()
+    finally:
+        for dialog in opened:
+            dialog.close()
+            if kind == "traceroute":
+                tools_dialog._trace_dialogs.remove(dialog)
+                dialog.deleteLater()
 
 
 def test_widget_shows_real_measurements(ctrl):

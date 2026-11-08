@@ -16,6 +16,7 @@ import signal
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import cast
 
 from . import APP_NAME, __version__
 from .core import config as cfgmod
@@ -144,6 +145,7 @@ def main(argv=None) -> int:
     from .gui.main_widget import MainWidget
     from .gui.settings_dialog import SettingsDialog
     from .gui.tray import Tray
+    from .gui.widgets import show_dialog
 
     tray_ok = QSystemTrayIcon.isSystemTrayAvailable()
     app.setProperty("tray_available", tray_ok)
@@ -172,14 +174,12 @@ def main(argv=None) -> int:
         d.show_target(tid)
 
     def settings():
-        d = dialogs.get("settings")
+        d = cast(SettingsDialog | None, dialogs.get("settings"))
         if d is None:
             d = dialogs["settings"] = SettingsDialog(ctrl, widget)
             d.history_requested.connect(history)
         d.load()
-        d.show()
-        d.raise_()
-        d.activateWindow()
+        show_dialog(d)
 
     def ipconfig(iface: str = ""):
         from .gui.ipconfig_dialog import IpConfigDialog
@@ -198,11 +198,10 @@ def main(argv=None) -> int:
         d.open_for()
 
     def about():
-        d = dialogs.get("about")
+        d = cast(AboutDialog | None, dialogs.get("about"))
         if d is None:
             d = dialogs["about"] = AboutDialog()
-        d.show()
-        d.raise_()
+        show_dialog(d)
 
     def manual_check():
         def once(info, err):
@@ -231,11 +230,10 @@ def main(argv=None) -> int:
             tools.wake(ctrl, t)
 
     def speedtest():
-        d = dialogs.get("speedtest")
+        d = cast(tools.SpeedTestDialog | None, dialogs.get("speedtest"))
         if d is None:
             d = dialogs["speedtest"] = tools.SpeedTestDialog(ctrl)
-        d.show()
-        d.raise_()
+        show_dialog(d)
 
     def tool(kind: str, tid: str):
         {"traceroute": traceroute, "wake": wake}.get(kind, lambda _t: speedtest())(tid)
