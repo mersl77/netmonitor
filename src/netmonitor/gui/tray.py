@@ -15,20 +15,17 @@ class Tray(QSystemTrayIcon):
         self._state = None
         self._update = False
         self.setToolTip("NetMonitor")
-        self._menu = None
-        self._rebuild_menu()
+        # QMenu i jeho akce musí žít po celou dobu exportu přes dbusmenu.
+        self._menu = widget.build_menu(for_tray=True)
+        self.setContextMenu(self._menu)
         self.activated.connect(self._on_activated)
         widget.ctrl.connection_changed.connect(self.on_connection)
         widget.ctrl.notification.connect(self.on_notification)
-        widget.visibility_toggled.connect(lambda _v: self._rebuild_menu())
-        widget.ctrl.config_changed.connect(lambda _c: self._rebuild_menu())
+        widget.visibility_toggled.connect(lambda _v: self._refresh_menu())
+        widget.ctrl.config_changed.connect(lambda _c: self._refresh_menu())
 
-    def _rebuild_menu(self) -> None:
-        old = self._menu
-        self._menu = self.widget.build_menu(for_tray=True)
-        self.setContextMenu(self._menu)
-        if old is not None:
-            old.deleteLater()
+    def _refresh_menu(self) -> None:
+        self.widget.update_menu(self._menu)
 
     def _on_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
@@ -45,7 +42,7 @@ class Tray(QSystemTrayIcon):
     def set_update(self, info) -> None:
         self._update = info is not None
         self.setIcon(app_icon(self._state or "unk", self._update))
-        self._rebuild_menu()
+        self._refresh_menu()
         if info is not None:
             self.showMessage("NetMonitor – nová verze", f"Je dostupná verze {info.version}. "
                              "Klikněte pravým tlačítkem na ikonu → Aktualizovat.",
