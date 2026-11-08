@@ -142,8 +142,15 @@ class Controller(QObject):
     def update_config(self, cfg: AppConfig, save: bool = True) -> None:
         old = self.cfg
         self.cfg = cfg.normalized()
-        self.notifier.update_config(self.cfg.notifications)
-        self.history.enabled = self.cfg.history.enabled
+        if old == self.cfg:
+            self.config_changed.emit(self.cfg)
+            return
+        if old.notifications != self.cfg.notifications:
+            self.notifier.update_config(self.cfg.notifications)
+        if old.history.enabled != self.cfg.history.enabled:
+            self.history.enabled = self.cfg.history.enabled
+        if old.ping.max_concurrent != self.cfg.ping.max_concurrent:
+            self.engine.set_max_concurrent(self.cfg.ping.max_concurrent)
         if old.network.refresh_s != self.cfg.network.refresh_s:
             self._net_timer.setInterval(self.cfg.network.refresh_s * 1000)
         if old.network.wan_interval_s != self.cfg.network.wan_interval_s:
@@ -152,7 +159,16 @@ class Controller(QObject):
                        old.network.isp_detection, old.network.isp_provider) != \
                       (self.cfg.network.adapter_auto, self.cfg.network.adapter_name, self.cfg.network.external_api,
                        self.cfg.network.isp_detection, self.cfg.network.isp_provider)
-        self._apply_targets()
+        gateway_changed = old.network.gateway_probe != self.cfg.network.gateway_probe
+        if gateway_changed:
+            self.gateway_snapshot = None
+        if old.real_targets() != self.cfg.real_targets() or gateway_changed:
+            self._apply_targets()
+        else:
+            if old.ping.targets != self.cfg.ping.targets:
+                self.targets_changed.emit()  # změnily se jen nadpisy sekcí
+            if old.ping.thresholds != self.cfg.ping.thresholds:
+                self._eval_timer.start()
         if net_changed:
             self.refresh_network()
             self.refresh_wan(force_isp=True)

@@ -1,7 +1,7 @@
 """Plánovač pingů a statistiky cílů.
 
 * Plánování na monotónních hodinách (fixed-rate, bez driftu).
-* Paralelní běh v ``ThreadPoolExecutor`` s omezeným počtem workerů.
+* Paralelní běh v ``ThreadPoolExecutor``; souběh omezuje plánovač živým limitem.
 * Na jeden cíl nikdy neběží dva požadavky současně (in-flight set).
 * Pomalý/nedostupný cíl neblokuje ostatní – každý ping je ohraničen timeoutem.
 * Detekce probuzení z uspání (skok wall-clock) => okamžité přeplánování.
@@ -24,6 +24,7 @@ from .ping_engine import Pinger, PingResult, PingStatus, Resolver, ping_host
 log = logging.getLogger(__name__)
 
 LOSS_WINDOW = 100      # klouzavé okno pro packet loss %
+MAX_CONCURRENT = 128   # horní mez normalizované konfigurace; workery vznikají až podle potřeby
 
 
 @dataclass(frozen=True)
@@ -155,7 +156,7 @@ class MonitorEngine:
                  clock: Callable[[], float] = time.monotonic):
         self.pinger = pinger
         self.resolver = resolver or Resolver()
-        self.max_concurrent = max(1, int(max_concurrent))
+        self.max_concurrent = max(1, min(MAX_CONCURRENT, int(max_concurrent)))
         self.on_result = on_result
         self.on_transition = on_transition
         self.on_resume = on_resume
@@ -169,11 +170,26 @@ class MonitorEngine:
         self._seq = 0
         self._inflight: set[str] = set()
         self._executor: ThreadPoolExecutor | None = None
+        self._retired_executors: list[ThreadPoolExecutor] = []
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._paused = False
 
     # -- konfigurace --------------------------------------------------------
+    def set_max_concurrent(self, limit: int) -> None:
+        """Změní limit bez restartu; rozběhnuté sondy vždy doběhnou."""
+        with self._cond:
+            limit = max(1, min(MAX_CONCURRENT, int(limit)))
+            if limit == self.max_concurrent:
+                return
+            self.max_concurrent = limit
+            if self._executor is not None and not self._stop.is_set():
+                old = self._executor
+                self._executor = ThreadPoolExecutor(max_workers=limit, thread_name_prefix="ping")
+                self._retired_executors.append(old)
+                old.shutdown(wait=False)  # bez rušení sond; stop() počká i na staré pooly
+            self._cond.notify_all()
+
     def set_targets(self, targets: Iterable[PingTarget]) -> None:
         with self._lock:
             new = {t.id: t for t in targets if t.enabled and not getattr(t, 'is_section', False)}
@@ -250,6 +266,8 @@ class MonitorEngine:
             return
         self._stop.clear()
         self.reschedule_all()      # po (re)startu měřit hned, ne až po intervalu
+        # Limit hlídá plánovač i pool, aby rychlé předávání kapacity nevytvářelo
+        # další vlákna ještě před návratem předchozího workeru do poolu.
         self._executor = ThreadPoolExecutor(max_workers=self.max_concurrent, thread_name_prefix="ping")
         self._thread = threading.Thread(target=self._loop, name="ping-scheduler", daemon=True)
         self._thread.start()
@@ -261,9 +279,14 @@ class MonitorEngine:
         if self._thread:
             self._thread.join(timeout)
             self._thread = None
-        if self._executor:
-            self._executor.shutdown(wait=True, cancel_futures=True)
+        with self._lock:
+            executors = self._retired_executors
+            self._retired_executors = []
+            if self._executor is not None:
+                executors.append(self._executor)
             self._executor = None
+        for executor in executors:
+            executor.shutdown(wait=True, cancel_futures=True)
         with self._lock:
             self._inflight.clear()
 
@@ -292,6 +315,8 @@ class MonitorEngine:
                     if due > now:
                         wait = min(wait, due - now)
                         break
+                    if not self._paused and tid not in self._inflight and len(self._inflight) >= self.max_concurrent:
+                        break  # splatný cíl zůstane ve frontě do uvolnění kapacity
                     heapq.heappop(self._heap)
                     t = self._targets[tid]
                     nxt = due + t.interval_s
@@ -331,3 +356,4 @@ class MonitorEngine:
         finally:
             with self._lock:
                 self._inflight.discard(t.id)
+                self._cond.notify_all()

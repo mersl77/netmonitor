@@ -118,23 +118,27 @@ class MainWidget(QWidget):
         return max(0.4, min(2.5, min(self.width() / BASE_W, self.height() / BASE_H * 1.15))) * a.font_scale
 
     def apply_config(self, cfg: AppConfig, initial: bool = False) -> None:
+        old = getattr(self, "_applied_cfg", None)
+        self._applied_cfg = cfg.copy()
         a = cfg.appearance
         if initial:
             self._restore_geometry(cfg)
-        self._scale = self._compute_scale()
-        s = self._scale
-        self._layout.setContentsMargins(int(34 * s), int(38 * s), int(32 * s), int(26 * s))
-        self.title.set_style(s, a.neon_effects)
-        self.net.apply_style(cfg, s)
-        self.ping.apply_style(cfg, s)
-        self.ping.set_targets(cfg, self.ctrl.snapshots)
-        self.grip.setVisible(not a.locked)
-        self.setWindowOpacity(a.opacity)
-        self._apply_window_flags(cfg)
-        if self.ctrl.network:
+        style_changed = (initial or old is None or old.appearance != a
+                         or old.ping.thresholds != cfg.ping.thresholds)
+        if style_changed:
+            self._scale = self._compute_scale()
+            s = self._scale
+            self._layout.setContentsMargins(int(34 * s), int(38 * s), int(32 * s), int(26 * s))
+            self.title.set_style(s, a.neon_effects)
+            self.net.apply_style(cfg, s)
+            self.ping.apply_style(cfg, s)
+            self.grip.setVisible(not a.locked)
+            self.setWindowOpacity(a.opacity)
+            self._apply_window_flags(cfg)
+            self.net.update_connection(self.ctrl.evaluation, a.colors)
+            self.update()
+        if self.ctrl.network and (style_changed or old is None or old.network.show_ipv6 != cfg.network.show_ipv6):
             self.net.update_network(self.ctrl.network, cfg.network.show_ipv6)
-        self.net.update_connection(self.ctrl.evaluation, a.colors)
-        self.update()
 
     def _on_connection(self, ev: ConnEvaluation) -> None:
         self.net.update_connection(ev, self.ctrl.cfg.appearance.colors)
