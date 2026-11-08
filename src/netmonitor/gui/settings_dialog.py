@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from shiboken6 import isValid
+
 from PySide6.QtCore import QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
@@ -43,8 +45,12 @@ def hint(text: str) -> QLabel:
 class TargetDialog(QDialog):
     """Přidání/úprava jednoho cíle s validací."""
 
-    def __init__(self, target: PingTarget | None, parent=None):
+    def __init__(self, target: PingTarget | None, parent=None, *, ctrl: Controller | None = None):
         super().__init__(parent)
+        self.ctrl = ctrl
+        self._lookup_pending = False
+        self._finished = False
+        self.finished.connect(self._dialog_finished)
         self.setWindowTitle("Upravit cíl" if target else "Přidat cíl")
         self.setStyleSheet(theme.DIALOG_QSS)
         self.t = target or PingTarget(name="", host="")
@@ -73,6 +79,7 @@ class TargetDialog(QDialog):
         self.mac = QLineEdit(self.t.mac)
         self.mac.setPlaceholderText("pro Wake-on-LAN, např. 04:D9:F5:15:34:86 (nepovinné)")
         self.btn_mac = QPushButton("Zjistit")
+        self.btn_mac.setEnabled(ctrl is not None)
         self.btn_mac.setToolTip("Pingne zařízení a přečte jeho MAC z ARP tabulky (musí být zapnuté a v této síti)")
         self.btn_mac.clicked.connect(self._detect_mac)
         mac_row = QHBoxLayout()
@@ -117,25 +124,36 @@ class TargetDialog(QDialog):
                           mac=self.mac.text().strip(), wol_broadcast=self.wol_bc.text().strip())
 
     def _detect_mac(self) -> None:
-        from PySide6.QtWidgets import QApplication
-
-        from ..core import wol
-        from ..core.ping_engine import Resolver, ping_host, select_pinger
+        if self.ctrl is None or self._lookup_pending:
+            return
         host = self.host.text().strip()
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            ip, _ = Resolver().resolve(host) if host else (None, "")
-            mac = None
-            if ip:
-                ping_host(ip, 0.8, select_pinger(), Resolver())
-                mac = wol.arp_lookup(ip)
-        finally:
-            QApplication.restoreOverrideCursor()
-        if mac:
-            self.mac.setText(mac)
-            self.err.setText("")
-        else:
-            self.err.setText("MAC se nepodařilo zjistit – zařízení musí být zapnuté a ve stejné síti (ARP).")
+        if not host or host_kind(host) == "invalid":
+            self.err.setText("Zadejte platnou IP adresu nebo doménu.")
+            return
+        old_mac = self.mac.text()
+        self._lookup_pending = True
+        self.btn_mac.setEnabled(False)
+        self.btn_mac.setText("Zjišťuji…")
+        self.err.setText("")
+
+        def finished(res):
+            if not isValid(self) or self._finished:
+                return
+            self._lookup_pending = False
+            self.btn_mac.setEnabled(True)
+            self.btn_mac.setText("Zjistit")
+            if self.host.text().strip() != host or self.mac.text() != old_mac:
+                self.err.setText("Host nebo MAC se během zjišťování změnily; výsledek nebyl použit.")
+                return
+            mac, err = res
+            if mac:
+                self.mac.setText(mac)
+            self.err.setText(err)
+
+        self.ctrl.detect_mac(f"mac-editor-{id(self)}", host, finished)
+
+    def _dialog_finished(self, _result: int) -> None:
+        self._finished = True
 
     def _accept(self) -> None:
         if self.mac.text().strip():
@@ -682,7 +700,7 @@ class SettingsDialog(QDialog):
         self._fill_table()
 
     def _add_target(self) -> None:
-        d = TargetDialog(None, self)
+        d = TargetDialog(None, self, ctrl=self.ctrl)
         if d.exec():
             t = d.result_target()
             anchor = self._selected_id()
@@ -714,7 +732,7 @@ class SettingsDialog(QDialog):
                 self._apply(fn)
                 self._fill_table()
             return
-        d = TargetDialog(t, self)
+        d = TargetDialog(t, self, ctrl=self.ctrl)
         if d.exec():
             nt = d.result_target()
             self._apply(lambda c: c.ping.targets.__setitem__(

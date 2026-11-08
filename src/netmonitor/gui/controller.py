@@ -20,7 +20,7 @@ from ..core.history import HistoryStore
 from ..core.monitoring import MonitorEngine, TargetSnapshot, Transition
 from ..core.network_info import NetworkInfoProvider, NetworkSnapshot
 from ..core.notifier import Notification, Notifier
-from ..core.ping_engine import PingResult, Resolver, select_pinger
+from ..core.ping_engine import PingResult, Resolver, ping_host, select_pinger
 from ..core.wan_info import WanState, fetch_wan_ip
 from ..utils.paths import data_dir
 from ..utils.validation import host_kind, is_private_address
@@ -208,6 +208,24 @@ class Controller(QObject):
 
     def test_now(self, target_id: str) -> None:
         self.engine.test_now(target_id)
+
+    def detect_mac(self, key: str, host: str, done: Callable[[tuple[str | None, str]], None]) -> None:
+        """DNS, osvěžení ARP pingem i čtení tabulky mimo GUI; chybu doručí jako výsledek."""
+        from ..core import wol
+
+        def job():
+            try:
+                ip, err = self.resolver.resolve(host)
+                if not ip:
+                    return None, err or "Adresu se nepodařilo přeložit."
+                ping_host(ip, 0.8, self.pinger, self.resolver)
+                mac = wol.arp_lookup(ip)
+                return mac, "" if mac else "MAC se nepodařilo zjistit – zařízení musí být zapnuté a ve stejné síti (ARP)."
+            except Exception as e:  # noqa: BLE001
+                log.exception("Zjištění MAC selhalo")
+                return None, f"Zjištění MAC selhalo: {e}"
+
+        self._run_bg(key, job, done)
 
     # ------------------------------------------------------------------ engine callbacks (worker vlákna!)
     def _engine_result(self, snap: TargetSnapshot, r: PingResult) -> None:

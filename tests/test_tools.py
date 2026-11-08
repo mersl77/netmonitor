@@ -28,22 +28,39 @@ def test_magic_packet_and_broadcast():
     assert wol.directed_broadcast("10.0.1.5", "255.255.0.0") == "10.0.255.255"
 
 
-def test_send_reaches_udp_listener():
-    """Odeslání na loopback-broadcast (přes extra broadcast 127.0.0.1) – ověří skutečný UDP paket."""
-    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        rx.bind(("127.0.0.1", 9))
-    except (PermissionError, OSError):
-        pytest.skip("port 9 nelze otevřít")
-    rx.settimeout(2)
-    try:
-        sent = wol.send("04:D9:F5:15:34:86", extra_broadcast="127.0.0.1")
-        assert "127.0.0.1:9" in sent
-        data, _ = rx.recvfrom(200)
-        assert data == wol.magic_packet(wol.parse_mac("04:D9:F5:15:34:86"))
-    finally:
-        rx.close()
+def test_send_builds_udp_datagrams(monkeypatch):
+    """Regrese: náhrada test_send_reaches_udp_listener bez skutečného UDP provozu.
+
+    Původní test přes loopback poslouchal payload, ale wol.send současně posílal
+    broadcast 255.255.255.255 do LAN. Fake socket ověří payload i všechny cíle bez odeslání.
+    """
+    packets = []
+    options = []
+    binds = []
+
+    class Socket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def setsockopt(self, *args):
+            options.append(args)
+
+        def bind(self, address):
+            binds.append(address)
+
+        def sendto(self, data, address):
+            packets.append((data, address))
+
+    monkeypatch.setattr(wol.socket, "socket", lambda *args: Socket())
+    sent = wol.send("02:00:00:00:00:01", "192.0.2.1", "255.255.255.0", extra_broadcast="198.51.100.255")
+    destinations = [(ip, port) for ip in ("255.255.255.255", "192.0.2.255", "198.51.100.255") for port in (9, 7)]
+    assert sent == [f"{ip}:{port}" for ip, port in destinations]
+    assert packets == [(wol.magic_packet(wol.parse_mac("02:00:00:00:00:01")), dst) for dst in destinations]
+    assert options == [(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)]
+    assert binds == [("192.0.2.1", 0)]
 
 
 ARP_WIN_CZ = """
