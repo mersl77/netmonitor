@@ -46,6 +46,7 @@ Užitečné přepínače:
 |---|---|
 | `--minimized` | start skrytě (jen ikona v oznamovací oblasti) |
 | `--diagnose` | textová diagnostika (síť, DNS, WAN, ISP, ping všech cílů) do JSON a konec |
+| `--diagnose-gui` | prostředí vykreslování do JSON a konec (inicializuje Qt); s `--diagnose` přidá sekci `gui` k síťové diagnostice |
 | `--reset-position` | vrátí widget do pravého horního rohu |
 | `--debug` | podrobný log |
 | `--config CESTA` | jiný konfigurační soubor |
