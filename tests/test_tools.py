@@ -28,6 +28,7 @@ def test_magic_packet_and_broadcast():
     assert wol.directed_broadcast("10.0.1.5", "255.255.0.0") == "10.0.255.255"
 
 
+@pytest.mark.integration
 def test_send_reaches_udp_listener():
     """Odeslání na loopback-broadcast (přes extra broadcast 127.0.0.1) – ověří skutečný UDP paket."""
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
