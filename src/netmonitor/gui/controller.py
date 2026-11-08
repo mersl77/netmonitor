@@ -6,9 +6,11 @@ v pozadí a výsledky se do UI doručují queued signály.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -371,7 +373,16 @@ class Controller(QObject):
 
     # ------------------------------------------------------------------ autostart
     def autostart_command(self) -> list[str]:
-        if getattr(sys, "frozen", False):
+        # AppImage mount i jeho sys.executable jsou dočasné; po přihlášení spouštíme původní soubor.
+        frozen = getattr(sys, "frozen", False)
+        if sys.platform == "linux" and frozen:
+            appimage = os.environ.get("APPIMAGE")
+            appdir = os.environ.get("APPDIR")
+            # Proměnné mohou být zděděné z cizí AppImage; ověříme příslušnost procesu.
+            if (appimage and appdir and os.path.isabs(appimage) and Path(appimage).is_file()
+                    and Path(sys.executable).resolve().is_relative_to(Path(appdir).resolve())):
+                return [appimage, "--minimized"] if self.cfg.general.start_minimized else [appimage]
+        if frozen:
             return [sys.executable, "--minimized"] if self.cfg.general.start_minimized else [sys.executable]
         exe = sys.executable
         if sys.platform == "win32" and exe.lower().endswith("python.exe"):
