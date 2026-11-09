@@ -19,8 +19,9 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from statistics import median
 
 from .ping_engine import PingResult
 
@@ -88,11 +89,38 @@ class SeriesPoint:
     rtt_max: float | None
     n_ok: int
     n_fail: int
+    bucket_s: float = 60.0
+
+    @property
+    def center_ts(self) -> float:
+        return self.ts + self.bucket_s / 2
 
     @property
     def loss_pct(self) -> float:
         n = self.n_ok + self.n_fail
         return 100.0 * self.n_fail / n if n else 0.0
+
+
+def series_segments(points: list[SeriesPoint]) -> list[list[SeriesPoint]]:
+    """Úseky grafu bez výpadků a mezer, podle šířek obou sousedních bodů.
+
+    U stejného rozlišení zůstává tolerance 2,5 kroku; u DB → raw se
+    porovnávají středy s 1,25násobkem součtu obou kroků.
+    """
+    segments: list[list[SeriesPoint]] = []
+    current: list[SeriesPoint] = []
+    for point in points:
+        gap = (bool(current) and point.center_ts - current[-1].center_ts >
+               1.25 * (current[-1].bucket_s + point.bucket_s))
+        if point.rtt_avg is None or gap:
+            if current:
+                segments.append(current)
+            current = []
+        if point.rtt_avg is not None:
+            current.append(point)
+    if current:
+        segments.append(current)
+    return segments
 
 
 @dataclass(frozen=True)
@@ -141,40 +169,44 @@ class HistoryStore:
 
     def flush(self) -> int:
         with self._lock:
-            pending, self._pending = self._pending, defaultdict(_Bucket)
-            if not pending:
-                return 0
-            rows = [(tid, ts, b.n_ok, b.n_fail, b.rtt_min, (b.rtt_sum / b.n_ok) if b.n_ok else None,
-                     b.rtt_max, b.last_status, b.last_error) for (tid, ts), b in pending.items()]
-            try:
-                with self._conn:
-                    self._conn.executemany(
-                        """INSERT INTO samples_1m(target_id, ts, n_ok, n_fail, rtt_min, rtt_avg, rtt_max,
-                                                 last_status, last_error)
-                           VALUES (?,?,?,?,?,?,?,?,?)
-                           ON CONFLICT(target_id, ts) DO UPDATE SET
-                             rtt_avg = CASE WHEN excluded.n_ok = 0 THEN rtt_avg
-                                            WHEN n_ok = 0 THEN excluded.rtt_avg
-                                            ELSE (rtt_avg * n_ok + excluded.rtt_avg * excluded.n_ok)
-                                                 / (n_ok + excluded.n_ok) END,
-                             rtt_min = CASE WHEN rtt_min IS NULL THEN excluded.rtt_min
-                                            WHEN excluded.rtt_min IS NULL THEN rtt_min
-                                            ELSE min(rtt_min, excluded.rtt_min) END,
-                             rtt_max = CASE WHEN rtt_max IS NULL THEN excluded.rtt_max
-                                            WHEN excluded.rtt_max IS NULL THEN rtt_max
-                                            ELSE max(rtt_max, excluded.rtt_max) END,
-                             n_ok = n_ok + excluded.n_ok,
-                             n_fail = n_fail + excluded.n_fail,
-                             last_status = excluded.last_status,
-                             last_error = excluded.last_error""",
-                        rows,
-                    )
-            except sqlite3.Error as e:
-                log.error("Zápis historie selhal: %s", e)
-                for k, b in pending.items():   # vrátit zpět do bufferu, ať se data neztratí
-                    self._pending[k] = b
-                return 0
-            return len(rows)
+            return self._flush_locked()
+
+    def _flush_locked(self) -> int:
+        """Zapíše pending vzorky; volající drží _lock, zámek znovu nezískává."""
+        pending, self._pending = self._pending, defaultdict(_Bucket)
+        if not pending:
+            return 0
+        rows = [(tid, ts, b.n_ok, b.n_fail, b.rtt_min, (b.rtt_sum / b.n_ok) if b.n_ok else None,
+                 b.rtt_max, b.last_status, b.last_error) for (tid, ts), b in pending.items()]
+        try:
+            with self._conn:
+                self._conn.executemany(
+                    """INSERT INTO samples_1m(target_id, ts, n_ok, n_fail, rtt_min, rtt_avg, rtt_max,
+                                             last_status, last_error)
+                       VALUES (?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(target_id, ts) DO UPDATE SET
+                         rtt_avg = CASE WHEN excluded.n_ok = 0 THEN rtt_avg
+                                        WHEN n_ok = 0 THEN excluded.rtt_avg
+                                        ELSE (rtt_avg * n_ok + excluded.rtt_avg * excluded.n_ok)
+                                             / (n_ok + excluded.n_ok) END,
+                         rtt_min = CASE WHEN rtt_min IS NULL THEN excluded.rtt_min
+                                        WHEN excluded.rtt_min IS NULL THEN rtt_min
+                                        ELSE min(rtt_min, excluded.rtt_min) END,
+                         rtt_max = CASE WHEN rtt_max IS NULL THEN excluded.rtt_max
+                                        WHEN excluded.rtt_max IS NULL THEN rtt_max
+                                        ELSE max(rtt_max, excluded.rtt_max) END,
+                         n_ok = n_ok + excluded.n_ok,
+                         n_fail = n_fail + excluded.n_fail,
+                         last_status = excluded.last_status,
+                         last_error = excluded.last_error""",
+                    rows,
+                )
+        except sqlite3.Error as e:
+            log.error("Zápis historie selhal: %s", e)
+            for k, b in pending.items():   # vrátit zpět do bufferu, ať se data neztratí
+                self._pending[k] = b
+            return 0
+        return len(rows)
 
     def add_event(self, kind: str, target_id: str | None = None, status: str | None = None,
                   detail: str | None = None, duration_s: float | None = None, ts: float | None = None) -> None:
@@ -210,14 +242,66 @@ class HistoryStore:
         self.flush()
         bucket_s = max(60, int(bucket_s))
         with self._lock:
-            cur = self._conn.execute(
-                """SELECT (ts / ?) * ? AS b, min(rtt_min),
-                          sum(rtt_avg * n_ok) / nullif(sum(CASE WHEN rtt_avg IS NOT NULL THEN n_ok END), 0),
-                          max(rtt_max), sum(n_ok), sum(n_fail)
-                   FROM samples_1m WHERE target_id = ? AND ts >= ?
-                   GROUP BY b ORDER BY b""",
-                (bucket_s, bucket_s, target_id, int(since)))
-            return [SeriesPoint(float(r[0]), r[1], r[2], r[3], int(r[4] or 0), int(r[5] or 0)) for r in cur]
+            return self._series_locked(target_id, since, bucket_s)
+
+    def _series_locked(self, target_id: str, since: float, bucket_s: int) -> list[SeriesPoint]:
+        """Čtení série; volající drží _lock."""
+        cur = self._conn.execute(
+            """SELECT (ts / ?) * ? AS b, min(rtt_min),
+                      sum(rtt_avg * n_ok) / nullif(sum(CASE WHEN rtt_avg IS NOT NULL THEN n_ok END), 0),
+                      max(rtt_max), sum(n_ok), sum(n_fail)
+               FROM samples_1m WHERE target_id = ? AND ts >= ?
+               GROUP BY b ORDER BY b""",
+            (bucket_s, bucket_s, target_id, int(since)))
+        return [SeriesPoint(float(r[0]), r[1], r[2], r[3], int(r[4] or 0), int(r[5] or 0), float(bucket_s))
+                for r in cur]
+
+    def hour_data(self, target_id: str, since: float) -> tuple[list[SeriesPoint], float, dict]:
+        """Hodinový graf a souhrn ze stejného snapshotu, jediným SELECTem.
+
+        Celou minutu nahradíme raw body jen při shodě počtů OK/FAIL. Minuta
+        restartu (nebo oříznutí ring-bufferu) tak zůstane z DB, pokud RAM
+        neobsahuje všechny její vzorky. Neztratí se starší data ani se nic
+        nezapočítá dvakrát. Filtr období je stejný jako u summary().
+        """
+        with self._lock:
+            self._flush_locked()
+            minutes = self._series_locked(target_id, since, 60)
+            raw = list(self._raw.get(target_id, ()))
+        by_minute: dict[int, list[SeriesPoint]] = defaultdict(list)
+        for ts, rtt, _status in raw:
+            by_minute[int(ts // 60 * 60)].append(
+                SeriesPoint(ts, rtt, rtt, rtt, int(rtt is not None), int(rtt is None)))
+        points: list[SeriesPoint] = []
+        raw_points: list[SeriesPoint] = []
+        raw_minutes: set[int] = set()
+        for minute in minutes:
+            samples = by_minute.get(int(minute.ts), [])
+            if (sum(p.n_ok for p in samples), sum(p.n_fail for p in samples)) == (minute.n_ok, minute.n_fail):
+                points.extend(samples)
+                raw_points.extend(samples)
+                raw_minutes.add(int(minute.ts))
+            else:
+                points.append(minute)
+        points.sort(key=lambda p: p.ts)
+        raw_points.sort(key=lambda p: p.ts)
+        # Medián brání tomu, aby dlouhá pauza v měření zvětšila šířku raw bodů
+        # a zamaskovala skutečnou mezeru v grafu. Osamocený raw bod má šířku 1 s.
+        steps = [b.ts - a.ts for a, b in zip(raw_points, raw_points[1:]) if b.ts > a.ts]
+        bucket = max(1.0, float(median(steps))) if steps else (1.0 if raw_points else 60.0)
+        points = [replace(p, bucket_s=bucket) if int(p.ts // 60 * 60) in raw_minutes else p for p in points]
+        n_ok, n_fail = sum(p.n_ok for p in minutes), sum(p.n_fail for p in minutes)
+        n = n_ok + n_fail
+        rtt_count = sum(p.n_ok for p in minutes if p.rtt_avg is not None)
+        summary = {
+            "rtt_min": min((p.rtt_min for p in minutes if p.rtt_min is not None), default=None),
+            "rtt_avg": (sum(p.rtt_avg * p.n_ok for p in minutes if p.rtt_avg is not None) / rtt_count
+                        if rtt_count else None),
+            "rtt_max": max((p.rtt_max for p in minutes if p.rtt_max is not None), default=None),
+            "n_ok": n_ok, "n_fail": n_fail,
+            "loss_pct": (100.0 * n_fail / n) if n else None,
+        }
+        return points, bucket, summary
 
     def events(self, since: float = 0, target_id: str | None = None, limit: int = 500) -> list[Event]:
         q = "SELECT ts, target_id, kind, status, detail, duration_s FROM events WHERE ts >= ?"
