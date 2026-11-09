@@ -52,6 +52,7 @@ class TracerouteDialog(QDialog):
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         v.addWidget(self.table, 1)
         self.status = QLabel()
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         self.status.setProperty("hint", True)
         v.addWidget(self.status)
@@ -72,10 +73,11 @@ class TracerouteDialog(QDialog):
         self.bridge.done.connect(self._finished)
         self._cancel = False
         self._thread: threading.Thread | None = None
+        self._closing_result: int | None = None
         self.hops: list[traceroute.Hop] = []
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self._closing_result is not None or (self._thread and self._thread.is_alive()):
             return
         self._cancel = False
         self.hops = []
@@ -120,12 +122,20 @@ class TracerouteDialog(QDialog):
         self.table.scrollToBottom()
 
     def _finished(self, ip, err: str) -> None:
+        # Signál může GUI převzít ještě před návratem workeru z emit().
+        if self.busy():
+            QTimer.singleShot(10, self, lambda: self._finished(ip, err))
+            return
         self.btn_run.setEnabled(True)
         reached = any(h.reached for h in self.hops)
-        if ip and reached:
+        if err:
+            self.status.setText(err)
+        elif ip and reached:
             self.status.setText(f"✔ Cíl {ip} dosažen za {len(self.hops)} skoků.")
         else:
-            self.status.setText(err or "Hotovo.")
+            self.status.setText("Hotovo.")
+        if self._closing_result is not None:
+            self.done(self._closing_result)
 
     def _copy(self) -> None:
         from PySide6.QtWidgets import QApplication
@@ -136,8 +146,25 @@ class TracerouteDialog(QDialog):
         QApplication.clipboard().setText("\n".join(lines))
         self.status.setText("Zkopírováno do schránky.")
 
-    def closeEvent(self, e):
+    def _request_close(self, result: int) -> bool:
+        """Nechat Qt/bridge žít až do ukončení procesu i workeru, bez blokování GUI."""
         self._cancel = True
+        if self.busy():
+            self._closing_result = result
+            self.btn_run.setEnabled(False)
+            self.status.setText("Ukončuji trasování…")
+            return False
+        return True
+
+    def done(self, result: int) -> None:
+        # Sem vede také Escape/reject(), které nemusí vyvolat closeEvent.
+        if self._request_close(result):
+            super().done(result)
+
+    def closeEvent(self, e):
+        if not self._request_close(QDialog.DialogCode.Rejected):
+            e.ignore()
+            return
         super().closeEvent(e)
 
 
@@ -262,11 +289,14 @@ _trace_dialogs: list[TracerouteDialog] = []
 
 
 def open_traceroute(ctrl, target: PingTarget) -> TracerouteDialog:
-    for old in [d for d in _trace_dialogs if not d.isVisible() and not d.busy()]:
-        _trace_dialogs.remove(old)
-        old.deleteLater()                      # rušení v GUI vlákně a až po doběhnutí vlákna
     d = TracerouteDialog(ctrl, target)
     _trace_dialogs.append(d)
+
+    def release(_result):
+        _trace_dialogs.remove(d)
+        d.deleteLater()                        # GUI vlákno, proces i worker už skončily
+
+    d.finished.connect(release)
     d.show()
     d.start()
     return d
