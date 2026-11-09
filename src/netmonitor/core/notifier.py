@@ -1,7 +1,7 @@
 """Logika lokálních upozornění – debounce (prodleva), cooldown, žádné zahlcení.
 
 Čistá logika bez Qt; GUI volá `tick()` (1× za sekundu) a doručené
-`Notification` zobrazí přes systémovou oblast (tray).
+`Notification` zobrazí přes systémovou oblast (tray), bez ní ve widgetu a v logu.
 """
 from __future__ import annotations
 

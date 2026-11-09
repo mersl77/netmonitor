@@ -6,11 +6,12 @@ import sys
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QGuiApplication, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QMenu, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QSizePolicy, QVBoxLayout, QWidget
 
 from .. import platform as plat
 from ..core.config import MODE_DESKTOP, MODE_ONTOP, AppConfig
 from ..core.connection_status import ConnEvaluation
+from ..core.notifier import Notification
 from . import theme
 from .controller import Controller
 from .i18n import tr
@@ -21,6 +22,47 @@ from .widgets import GlowTitle
 log = logging.getLogger(__name__)
 BASE_W, BASE_H = 600, 850
 MIN_W, MIN_H = 260, 340
+
+
+class _NotificationNotice(QLabel):
+    """Dva zkrácené řádky; počet dalších zpráv má přednost před dlouhým názvem."""
+
+    def __init__(self):
+        super().__init__()
+        self._title = self._message = ""
+        self._additional = 0
+        self.critical = False
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
+
+    def set_notification(self, n: Notification, additional: int) -> None:
+        self._title = " ".join(n.title.split())
+        self._message = " ".join(n.message.split())
+        self._additional = additional
+        self.critical = n.critical
+        self._refresh_text()
+
+    def set_style(self, scale: float, color: str) -> None:
+        self.setFont(theme.font("body", 16, scale=scale))
+        padding = max(1, round(4 * scale))
+        self.setStyleSheet(f"QLabel {{ color: {color}; background: {theme.GLASS_BOTTOM.name()}; "
+                          f"border: 1px solid {color}; padding: {padding}px; }}")
+        self.setMaximumHeight(2 * self.fontMetrics().lineSpacing() + 2 * padding + 2)
+        self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        fm = self.fontMetrics()
+        width = max(0, self.contentsRect().width())
+        suffix = f" (+{self._additional} dalších)" if self._additional else ""
+        title = fm.elidedText(self._title, Qt.TextElideMode.ElideRight,
+                             max(0, width - fm.horizontalAdvance(suffix)))
+        message = fm.elidedText(self._message, Qt.TextElideMode.ElideRight, width)
+        self.setText(f"{title}{suffix}\n{message}")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._refresh_text()
 
 
 class ResizeGrip(QWidget):
@@ -83,6 +125,10 @@ class MainWidget(QWidget):
         self._press_pos: QPoint | None = None
         self._dragging = False
         self._win_offset = QPoint()
+        self._hidden_notification_count = 0
+        self._visible_notification: Notification | None = None
+        self._pending_notification: Notification | None = None
+        self._pending_notification_count = 0
         self.platform_notice = ""
         self.update_version: str | None = None
 
@@ -92,6 +138,9 @@ class MainWidget(QWidget):
         lay = QVBoxLayout(self)
         lay.setSpacing(2)
         lay.addWidget(self.title)
+        self.notification_notice = _NotificationNotice()
+        self.notification_notice.hide()
+        lay.addWidget(self.notification_notice)
         lay.addWidget(self.net)
         lay.addWidget(self.ping, 1)
         self._layout = lay
@@ -100,12 +149,21 @@ class MainWidget(QWidget):
 
         self._geom_timer = QTimer(self, singleShot=True, interval=700, timeout=self.remember_geometry)
         self._bottom_timer = QTimer(self, singleShot=True, interval=50, timeout=self._push_to_bottom)
+        self._notification_timer = QTimer(self)
+        self._notification_timer.setSingleShot(True)
+        self._notification_timer.setInterval(8000)
+        self._notification_timer.timeout.connect(self._expire_notifications)
+        self._notification_batch_timer = QTimer(self)
+        self._notification_batch_timer.setSingleShot(True)
+        self._notification_batch_timer.setInterval(0)
+        self._notification_batch_timer.timeout.connect(self._flush_notifications)
 
         ctrl.target_result.connect(lambda s, r: self.ping.update_snapshot(s))
         ctrl.targets_changed.connect(lambda: self.ping.set_targets(self.ctrl.cfg, self.ctrl.snapshots))
         ctrl.network_updated.connect(lambda s: self.net.update_network(s, self.ctrl.cfg.network.show_ipv6))
         ctrl.wan_updated.connect(self.net.update_wan)
         ctrl.connection_changed.connect(self._on_connection)
+        ctrl.notification.connect(self._on_notification)
         ctrl.config_changed.connect(self.apply_config)
 
         self.apply_config(ctrl.cfg, initial=True)
@@ -127,6 +185,7 @@ class MainWidget(QWidget):
         self.title.set_style(s, a.neon_effects)
         self.net.apply_style(cfg, s)
         self.ping.apply_style(cfg, s)
+        self._style_notification_notice()
         self.ping.set_targets(cfg, self.ctrl.snapshots)
         self.grip.setVisible(not a.locked)
         self.setWindowOpacity(a.opacity)
@@ -138,6 +197,45 @@ class MainWidget(QWidget):
 
     def _on_connection(self, ev: ConnEvaluation) -> None:
         self.net.update_connection(ev, self.ctrl.cfg.appearance.colors)
+
+    def _on_notification(self, n: Notification) -> None:
+        """Bez tray sloučí zprávy jednoho ticku; celé texty uchová v lokálním logu."""
+        if self.ctrl.tray_available:
+            return
+        log.log(logging.WARNING if n.critical else logging.INFO, "%s: %s", n.title, n.message)
+        pending = self._pending_notification
+        if pending is None or not pending.critical or n.critical:
+            self._pending_notification = n  # při stejné závažnosti vyhraje poslední
+        self._pending_notification_count += 1
+        if not self._notification_batch_timer.isActive():
+            self._notification_batch_timer.start()
+
+    def _flush_notifications(self) -> None:
+        n, count = self._pending_notification, self._pending_notification_count
+        self._pending_notification, self._pending_notification_count = None, 0
+        if n is None:
+            return
+        primary = self._visible_notification
+        if primary is not None and primary.critical and not n.critical:
+            # Výpadek ponech do konce jeho okna; méně závažná dávka se samostatně nezobrazí.
+            self._hidden_notification_count += count
+        else:
+            primary = self._visible_notification = n
+            # Předchozí hlavní text už byl zobrazený v jiném ticku, proto se nepočítá.
+            self._hidden_notification_count += count - 1
+            self._notification_timer.start()
+        self.notification_notice.set_notification(primary, self._hidden_notification_count)
+        self._style_notification_notice()
+        self.notification_notice.show()
+
+    def _expire_notifications(self) -> None:
+        self.notification_notice.hide()
+        self._hidden_notification_count = 0
+        self._visible_notification = None
+
+    def _style_notification_notice(self) -> None:
+        colors = self.ctrl.cfg.appearance.colors
+        self.notification_notice.set_style(self._scale, colors.bad if self.notification_notice.critical else colors.warn)
 
     def _apply_window_flags(self, cfg: AppConfig) -> None:
         a = cfg.appearance
@@ -304,6 +402,7 @@ class MainWidget(QWidget):
             self.title.set_style(s, cfg.appearance.neon_effects)
             self.net.apply_style(cfg, s)
             self.ping.apply_style(cfg, s)
+            self._style_notification_notice()
         self._geom_timer.start()
 
     def moveEvent(self, e):
@@ -433,7 +532,7 @@ class MainWidget(QWidget):
         a = cfg.appearance
         m = QMenu(parent)
         m.setStyleSheet(theme.DIALOG_QSS)
-        if for_tray:
+        if for_tray and self.ctrl.tray_available:
             act = m.addAction(tr("Zobrazit widget") if not self.isVisible() else tr("Skrýt do oznamovací oblasti"))
             act.triggered.connect(self.toggle_visible)
             m.addSeparator()
@@ -464,7 +563,7 @@ class MainWidget(QWidget):
         ct = m.addAction(tr("Ignorovat myš (click-through)"))
         ct.setCheckable(True)
         ct.setChecked(a.click_through)
-        ct.setEnabled(for_tray or not a.click_through)
+        ct.setEnabled(self.ctrl.tray_available and (for_tray or not a.click_through))
         ct.triggered.connect(lambda v: self._set_click_through(v))
         op = m.addMenu(tr("Průhlednost pozadí"))
         for pct in (0, 20, 40, 60, 80, 100):
@@ -480,8 +579,8 @@ class MainWidget(QWidget):
             sz.addAction(label, lambda w=w, h=h: self.set_size(w, h))
         m.addSeparator()
         m.addAction(tr("Obnovit nyní"), self.refresh_now)
-        if not for_tray:
-            m.addAction(tr("Skrýt do oznamovací oblasti"), self.hide)
+        if not for_tray and self.ctrl.tray_available:
+            m.addAction(tr("Skrýt do oznamovací oblasti"), self.toggle_visible)
         m.addSeparator()
         m.addAction(tr("O aplikaci…"), self.open_about.emit)
         m.addAction(tr("Ukončit"), self.quit_requested.emit)
@@ -494,9 +593,6 @@ class MainWidget(QWidget):
         self.ctrl.update_config(cfg)
 
     def _set_click_through(self, v: bool) -> None:
-        if v and not QApplication.instance().property("tray_available"):
-            log.warning("Click-through bez tray ikony nelze bezpečně vypnout – ignoruji")
-            return
         self._set_appearance(click_through=v)
 
     def refresh_now(self) -> None:
@@ -506,7 +602,10 @@ class MainWidget(QWidget):
 
     def toggle_visible(self) -> None:
         if self.isVisible():
-            self.hide()
+            if self.ctrl.tray_available:
+                self.hide()
+            else:
+                log.warning("Oznamovací oblast nedostupná – widget zůstává viditelný")
         else:
             self.show()
             self.raise_() if self.ctrl.cfg.appearance.mode == MODE_ONTOP else None

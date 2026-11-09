@@ -147,9 +147,6 @@ def main(argv=None) -> int:
 
     tray_ok = QSystemTrayIcon.isSystemTrayAvailable()
     app.setProperty("tray_available", tray_ok)
-    if not tray_ok and cfg.appearance.click_through:
-        cfg.appearance.click_through = False      # bez tray by nešlo vypnout
-        log.warning("Oznamovací oblast nedostupná – click-through vypnut")
 
     hist_path = None
     if args.screenshot:
@@ -277,7 +274,10 @@ def main(argv=None) -> int:
     sig_timer.start()
 
     ctrl.start()
-    start_hidden = (args.minimized or cfg.general.start_minimized) and tray_ok
+    minimized = args.minimized or cfg.general.start_minimized
+    start_hidden = minimized and tray_ok
+    if minimized and not tray_ok:
+        log.warning("Oznamovací oblast nedostupná – minimalizovaný start ignoruji, widget zůstává viditelný")
     if not start_hidden:
         widget.show()
 

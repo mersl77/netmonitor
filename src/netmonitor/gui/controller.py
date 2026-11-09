@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal, Slot
 
 from ..core import config as cfgmod
 from ..core.config import AppConfig, PingTarget
@@ -42,7 +42,7 @@ class Controller(QObject):
 
     def __init__(self, cfg: AppConfig, config_path=None, history_path=None, parent=None):
         super().__init__(parent)
-        self.cfg = cfg
+        self.cfg = self._safe_config(cfg)
         self.config_path = config_path
         self._bg = ThreadPoolExecutor(max_workers=3, thread_name_prefix="bg")
         self._deliver.connect(self._on_deliver)
@@ -139,9 +139,22 @@ class Controller(QObject):
         self._run_bg(f"db-{self._seq}", fn)
 
     # ------------------------------------------------------------------ konfigurace
+    @property
+    def tray_available(self) -> bool:
+        app = QCoreApplication.instance()
+        return bool(app is not None and app.property("tray_available"))
+
+    def _safe_config(self, cfg: AppConfig) -> AppConfig:
+        """Společná ochrana pro start, nastavení, import i přímý update_config."""
+        cfg = cfg.normalized()
+        if cfg.appearance.click_through and not self.tray_available:
+            cfg.appearance.click_through = False
+            log.warning("Oznamovací oblast nedostupná – click-through vypnut")
+        return cfg
+
     def update_config(self, cfg: AppConfig, save: bool = True) -> None:
         old = self.cfg
-        self.cfg = cfg.normalized()
+        self.cfg = self._safe_config(cfg)
         self.notifier.update_config(self.cfg.notifications)
         self.history.enabled = self.cfg.history.enabled
         if old.network.refresh_s != self.cfg.network.refresh_s:
