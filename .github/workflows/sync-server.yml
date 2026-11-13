@@ -40,6 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           docker tag netmonitor-sync:ci ghcr.io/mersl77/netmonitor-sync:latest
+          docker pull -q postgres:17
           docker network create nginx-proxy-manager_default
           docker compose up -d --pull never --wait --wait-timeout 120 || { docker compose logs; exit 1; }
           api=http://127.0.0.1:8766
