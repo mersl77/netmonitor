@@ -416,6 +416,8 @@ class SettingsDialog(QDialog):
         f.addRow(self._check("Spouštět minimalizované (jen ikona v oznamovací oblasti)", "general", "start_minimized"))
         f.addRow(self._check("Při skrytí minimalizovat do oznamovací oblasti", "general", "minimize_to_tray"))
         f.addRow(self._check("Kontrolovat nové verze (při startu a každých 6 hodin)", "general", "check_updates"))
+        f.addRow(self._check("Přijímat beta aktualizace", "general", "receive_beta_updates"))
+        f.addRow(hint("Ve výchozím stavu vypnuto. Po zapnutí bude GitHub nabízet také testovací vydání."))
         f.addRow(self._check("Instalovat aktualizace automaticky (bez ptaní)", "general", "auto_update"))
         self.update_url = QLineEdit()
         self.update_url.setPlaceholderText("https://github.com/<účet>/<repozitář>/releases  nebo JSON manifest")
