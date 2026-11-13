@@ -11,7 +11,19 @@ import ssl
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    # Bearer token se nikdy nesmí přeposlat na jiný host.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open(req, timeout: float):
+    opener = build_opener(_RejectRedirects(), HTTPSHandler(context=ssl.create_default_context()))
+    return opener.open(req, timeout=timeout)
 
 
 class SyncError(RuntimeError):
@@ -50,7 +62,7 @@ class SyncClient:
             headers["Authorization"] = "Bearer " + self.access_token
         req = Request(self.base_url + path, data=body, headers=headers, method=method)
         try:
-            with urlopen(req, timeout=self.timeout_s, context=ssl.create_default_context()) as resp:
+            with _open(req, timeout=self.timeout_s) as resp:
                 data = resp.read(1024 * 1024 + 1)
                 if len(data) > 1024 * 1024:
                     raise SyncError("Odpověď serveru je příliš velká")
