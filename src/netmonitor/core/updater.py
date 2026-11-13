@@ -48,7 +48,7 @@ class UpdateError(Exception):
     pass
 
 
-_VERSION_RE = re.compile(r"^v?(\\d+)\\.(\\d+)(?:\\.(\\d+))?(?:(a|b|rc)(\\d+))?$", re.I)
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)(?:\.(\d+))?(?:(a|b|rc)(\d+))?$", re.I)
 
 
 def version_key(v: str) -> tuple:
