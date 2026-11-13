@@ -62,8 +62,12 @@ class ProfileStore:
         raise ValueError("Neznámý profil")
 
     def bind_remote(self, profile_id: str, remote_id: str, revision: int,
-                    account: str, server: str) -> None:
-        """Spáruje lokální profil se vzdáleným po potvrzeném úspěšném zápisu."""
+                    account: str, server: str, synced_hash: str | None = None) -> None:
+        """Spáruje lokální profil se vzdáleným po potvrzeném úspěšném zápisu.
+
+        synced_hash je otisk obsahu, který je v tu chvíli shodný se serverem; podle něj se
+        pozná, že se profil od poslední synchronizace místně změnil.
+        """
         uuid.UUID(remote_id)
         if not isinstance(revision, int) or revision < 1:
             raise ValueError("Neplatná revize")
@@ -74,6 +78,8 @@ class ProfileStore:
                 item["remote_revision"] = revision
                 item["remote_account"] = account.strip().casefold()
                 item["remote_server"] = server.rstrip("/")
+                item["synced_hash"] = synced_hash or ""
+                item.pop("local_only", None)
                 atomic_write_json(self.index_path, index)
                 return
         raise ValueError("Neznámý profil")
@@ -115,13 +121,7 @@ class ProfileStore:
             raise ValueError("Profil s tímto názvem už existuje")
         for item in index["profiles"]:
             if item["id"] == profile_id:
-                if item["name"] != name:
-                    # Existing API cannot rename: next upload creates the new name,
-                    # while the old cloud copy is retained for explicit deletion.
-                    for key in list(item):
-                        if key.startswith("remote_"):
-                            del item[key]
-                item["name"] = name
+                item["name"] = name      # vazba na server zůstává; nový název se nahraje při synchronizaci
                 atomic_write_json(self.index_path, index)
                 return
         raise ValueError("Neznámý profil")
@@ -139,9 +139,49 @@ class ProfileStore:
             raise ValueError("Aktivní profil nelze smazat")
         if profile_id not in {p["id"] for p in index["profiles"]}:
             raise ValueError("Neznámý profil")
+        gone = next(p for p in index["profiles"] if p["id"] == profile_id)
+        if gone.get("remote_id"):
+            # Smazání se na serveru dokončí při nejbližší synchronizaci (i když je teď počítač offline).
+            index.setdefault("pending_deletes", []).append({
+                "remote_id": gone["remote_id"], "account": gone.get("remote_account", ""),
+                "server": gone.get("remote_server", "")})
         index["profiles"] = [p for p in index["profiles"] if p["id"] != profile_id]
         atomic_write_json(self.index_path, index)
         self._file(profile_id).unlink(missing_ok=True)
+
+    def pending_deletes(self, account: str, server: str) -> list[str]:
+        return [d["remote_id"] for d in self._read().get("pending_deletes", [])
+                if d.get("account") == account and d.get("server") == server]
+
+    def clear_pending_delete(self, remote_id: str) -> None:
+        index = self._read()
+        index["pending_deletes"] = [d for d in index.get("pending_deletes", []) if d.get("remote_id") != remote_id]
+        atomic_write_json(self.index_path, index)
+
+    def unbind(self, profile_id: str, local_only: bool = False) -> None:
+        """Zruší vazbu na server. local_only=True: profil se už sám nenahrává."""
+        index = self._read()
+        for item in index["profiles"]:
+            if item["id"] == profile_id:
+                for key in [k for k in item if k.startswith("remote_") or k == "synced_hash"]:
+                    del item[key]
+                if local_only:
+                    item["local_only"] = True
+                else:
+                    item.pop("local_only", None)
+                atomic_write_json(self.index_path, index)
+                return
+        raise ValueError("Neznámý profil")
+
+    def unique_name(self, name: str, skip_id: str | None = None) -> str:
+        taken = {p["name"].casefold() for p in self.list_profiles() if p["id"] != skip_id}
+        name = name.strip()[:100] or "Profil"
+        candidate, i = name, 2
+        while candidate.casefold() in taken:
+            suffix = f" ({i})"
+            candidate = name[:100 - len(suffix)] + suffix
+            i += 1
+        return candidate
 
     def unbind_remote(self, remote_id: str, account: str, server: str) -> None:
         index = self._read()
@@ -150,6 +190,6 @@ class ProfileStore:
                     and item.get("remote_account") == account
                     and item.get("remote_server") == server):
                 for key in list(item):
-                    if key.startswith("remote_"):
+                    if key.startswith("remote_") or key == "synced_hash":
                         del item[key]
         atomic_write_json(self.index_path, index)

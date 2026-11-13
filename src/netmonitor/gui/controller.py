@@ -38,6 +38,7 @@ class Controller(QObject):
     connection_changed = Signal(object)         # ConnEvaluation
     config_changed = Signal(object)             # AppConfig
     notification = Signal(object)               # Notification
+    profiles_changed = Signal()                 # seznam profilů nebo aktivní profil
     _deliver = Signal(object, object)
 
     def __init__(self, cfg: AppConfig, config_path=None, history_path=None, parent=None):
@@ -45,6 +46,7 @@ class Controller(QObject):
         self.cfg = cfg
         self.config_path = config_path
         self.profile_store = None  # aktivuje hlavní aplikace; screenshot/test režim bez profilů
+        self.sync = None           # SyncService; vytváří hlavní aplikace
         self._bg = ThreadPoolExecutor(max_workers=3, thread_name_prefix="bg")
         self._deliver.connect(self._on_deliver)
         self._busy: set[str] = set()
@@ -173,6 +175,27 @@ class Controller(QObject):
         cfgmod.save_config(cfg, self.config_path)
         if self.profile_store is not None:
             self.profile_store.save_active(cfg)
+
+    def switch_profile(self, profile_id: str) -> None:
+        """Přepne aktivní profil (cíle, upozornění, IP/DNS předvolby). Vyhazuje ValueError/OSError."""
+        store = self.profile_store
+        if store is None or profile_id == store.active_id():
+            return
+        self._save_timer.stop()
+        self._save_now()                       # rozpracované změny patří ještě původnímu profilu
+        cfg = store.activate(profile_id)
+        self.apply_profile_config(cfg)
+        self.profiles_changed.emit()
+
+    def apply_profile_config(self, cfg: AppConfig) -> None:
+        """Použije obsah profilu, ale ponechá věci patřící tomuto počítači (poloha a velikost okna)."""
+        a, mine = cfg.appearance, self.cfg.appearance
+        for key in ("x", "y", "width", "height"):
+            if hasattr(mine, key):
+                setattr(a, key, getattr(mine, key))
+        self.update_config(cfg)
+        self._save_timer.stop()
+        self._save_now()
 
     def _apply_targets(self) -> None:
         targets = self.cfg.real_targets()

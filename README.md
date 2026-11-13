@@ -5,7 +5,7 @@ informace o síťovém připojení (WAN IP, ISP, adaptér, LAN IP, brána, rychl
 monitoruje dostupnost uživatelsky definovaných IP adres a domén přes ICMP.
 
 - Python 3.12+ · PySide6 (Qt 6) · psutil · SQLite · JSON konfigurace
-- Žádný Electron, server, cloud, účet, telemetrie ani placené API
+- Žádný Electron, telemetrie ani placené API; účet a synchronizace profilů jsou volitelné a běží na vlastním serveru
 - Nástroje: traceroute, Wake-on-LAN, test rychlosti, nastavení IP adresy karty, automatické aktualizace
 - Všechny hodnoty ve widgetu pochází ze skutečného měření/detekce
 
@@ -27,6 +27,12 @@ Hotové balíčky jsou v [Releases](https://github.com/mersl77/netmonitor/releas
 spuštění staženého souboru zobrazí „Systém Windows ochránil váš počítač – Neznámý vydavatel“. Pokračujte přes
 *Další informace → Přesto spustit*. Pravost souboru lze ověřit otiskem SHA-256 uvedeným u souboru v Releases
 (`Get-FileHash .\NetMonitor-<verze>-setup.exe`). Aktualizace stahované samotnou aplikací se ověřují automaticky.
+
+## Profily a synchronizace (1.4 beta)
+
+Profily (Soukromý, Firemní…) se přepínají pravým tlačítkem na widgetu nebo ikoně v liště → **Profil**.
+Po přihlášení k vlastnímu serveru se synchronizují mezi počítači; nový účet vyžaduje licenční klíč od správce.
+Podrobnosti: [docs/ACCOUNT_PROFILES_SYNC.md](docs/ACCOUNT_PROFILES_SYNC.md), server: [sync-server/README.md](sync-server/README.md).
 
 ## Rychlý start (ze zdrojů)
 

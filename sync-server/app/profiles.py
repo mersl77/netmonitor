@@ -1,167 +1,119 @@
-"""Profilové API pro existující NetMonitor Sync FastAPI server.
-
-Určeno k integraci do /opt/netmonitor-sync/api/app na serveru aplikacni.
-Nepoužívat jako standalone: očekává stávající app.database, app.models
-a jwt_secret z Docker secretu.
-"""
+"""Profily jednoho účtu. Zápis kontroluje revizi (optimistické zamykání): konflikt = HTTP 409."""
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from pathlib import Path
-from uuid import UUID, uuid4
+import uuid
 
-import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .database import get_db
-from .models import Profile, User
+from .deps import Auth, current_auth, error, get_db
+from .models import Profile, aware, now
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
-JWT_SECRET = Path("/run/secrets/jwt_secret")
-MAX_CONFIG_BYTES = 512 * 1024
 
 
 class ProfileCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: str = Field(max_length=100)
     config: dict
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("Prázdný název profilu")
-        return value
-
-    @field_validator("config")
-    @classmethod
-    def validate_config(cls, value: dict) -> dict:
-        if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > MAX_CONFIG_BYTES:
-            raise ValueError("Konfigurace překračuje limit 512 KiB")
-        if not isinstance(value.get("ping"), dict):
-            raise ValueError("Konfigurace neobsahuje ping")
-        return value
 
 
 class ProfileUpdate(BaseModel):
-    config: dict
     revision: int = Field(ge=1)
-
-    @field_validator("config")
-    @classmethod
-    def validate_config(cls, value: dict) -> dict:
-        return ProfileCreate.validate_config(value)
+    config: dict | None = None
+    name: str | None = Field(default=None, max_length=100)
 
 
-def current_user(
-    authorization: str | None = Header(default=None),
-    db: Session = Depends(get_db),
-) -> User:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Chybí přístupový token")
-    token = authorization[7:]
-    try:
-        secret = JWT_SECRET.read_text(encoding="utf-8").strip()
-        claims = jwt.decode(
-            token, secret, algorithms=["HS256"],
-            issuer="netmonitor-sync", audience="netmonitor-desktop",
-            options={"require": ["exp", "sub", "iss", "aud"]},
-        )
-        uid = UUID(str(claims["sub"]))
-    except (OSError, ValueError, jwt.PyJWTError, KeyError) as exc:
-        raise HTTPException(status_code=401, detail="Neplatný nebo expirovaný token") from exc
-    user = db.get(User, uid)
-    if user is None:
-        raise HTTPException(status_code=401, detail="Uživatel neexistuje")
-    return user
+def clean_name(raw: str) -> str:
+    name = raw.strip()
+    if not name:
+        raise error(422, "invalid_name", "Název profilu nesmí být prázdný.")
+    return name
 
 
-def profile_owned(db: Session, user: User, profile_id: UUID) -> Profile:
-    obj = db.scalar(select(Profile).where(
-        Profile.id == profile_id, Profile.user_id == user.id
-    ))
+def check_config(request: Request, config: dict) -> dict:
+    if len(json.dumps(config, ensure_ascii=False).encode("utf-8")) > request.app.state.settings.max_config_bytes:
+        raise error(413, "config_too_large", "Konfigurace profilu je příliš velká.")
+    if not isinstance(config.get("ping"), dict):
+        raise error(422, "invalid_config", "Konfigurace neobsahuje nastavení ping.")
+    return config
+
+
+def owned(db: Session, auth: Auth, profile_id: uuid.UUID) -> Profile:
+    obj = db.scalar(select(Profile).where(Profile.id == profile_id, Profile.user_id == auth.user.id))
     if obj is None:
-        raise HTTPException(status_code=404, detail="Profil nenalezen")
+        raise error(404, "not_found", "Profil nenalezen.")       # cizí profil se neliší od neexistujícího
     return obj
 
 
-def serialize(obj: Profile) -> dict:
-    return {
-        "id": str(obj.id), "name": obj.name, "config": obj.config,
-        "revision": obj.revision,
-        "updated_at": obj.updated_at.isoformat() if obj.updated_at else None,
-    }
+def summary(obj: Profile) -> dict:
+    updated = aware(obj.updated_at)
+    return {"id": str(obj.id), "name": obj.name, "revision": obj.revision,
+            "updated_at": updated.isoformat() if updated else None}
+
+
+def full(obj: Profile) -> dict:
+    return {**summary(obj), "config": obj.config}
 
 
 @router.get("")
-def list_profiles(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    result = db.scalars(select(Profile).where(Profile.user_id == user.id).order_by(Profile.name)).all()
-    return [{"id": str(p.id), "name": p.name, "revision": p.revision,
-             "updated_at": p.updated_at.isoformat() if p.updated_at else None}
-            for p in result]
+def list_profiles(auth: Auth = Depends(current_auth), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Profile).where(Profile.user_id == auth.user.id).order_by(Profile.name_key)).all()
+    return [summary(p) for p in rows]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
-def create_profile(
-    body: ProfileCreate, user: User = Depends(current_user), db: Session = Depends(get_db)
-):
-    exists = db.scalar(select(Profile.id).where(
-        Profile.user_id == user.id, Profile.name == body.name
-    ))
-    if exists is not None:
-        raise HTTPException(status_code=409, detail="Profil s tímto názvem existuje")
-    obj = Profile(
-        id=uuid4(), user_id=user.id, name=body.name,
-        config=body.config, revision=1, updated_at=datetime.now(timezone.utc),
-    )
+@router.post("", status_code=201)
+def create_profile(body: ProfileCreate, request: Request, auth: Auth = Depends(current_auth),
+                   db: Session = Depends(get_db)):
+    name = clean_name(body.name)
+    check_config(request, body.config)
+    count = db.scalar(select(func.count()).select_from(Profile).where(Profile.user_id == auth.user.id))
+    if count >= request.app.state.settings.max_profiles:
+        raise error(409, "profile_limit", "Dosažen maximální počet profilů na účet.")
+    obj = Profile(user_id=auth.user.id, name=name, name_key=name.casefold(), config=body.config)
     db.add(obj)
-    db.commit()
-    db.refresh(obj)
-    return serialize(obj)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise error(409, "name_exists", "Profil s tímto názvem už na serveru existuje.") from exc
+    return full(obj)
 
 
 @router.get("/{profile_id}")
-def get_profile(
-    profile_id: UUID, user: User = Depends(current_user), db: Session = Depends(get_db)
-):
-    return serialize(profile_owned(db, user, profile_id))
+def get_profile(profile_id: uuid.UUID, auth: Auth = Depends(current_auth), db: Session = Depends(get_db)):
+    return full(owned(db, auth, profile_id))
 
 
 @router.put("/{profile_id}")
-def update_profile(
-    profile_id: UUID, body: ProfileUpdate,
-    user: User = Depends(current_user), db: Session = Depends(get_db),
-):
-    # Atomická CAS aktualizace; souběžné uložení stejné revize nesmí uspět dvakrát.
-    from sqlalchemy import update
-    result = db.execute(
-        update(Profile).where(
-            Profile.id == profile_id,
-            Profile.user_id == user.id,
-            Profile.revision == body.revision,
-        ).values(
-            config=body.config,
-            revision=body.revision + 1,
-            updated_at=datetime.now(timezone.utc),
-        )
-    )
+def update_profile(profile_id: uuid.UUID, body: ProfileUpdate, request: Request,
+                   auth: Auth = Depends(current_auth), db: Session = Depends(get_db)):
+    values: dict = {"revision": body.revision + 1, "updated_at": now()}
+    if body.config is not None:
+        values["config"] = check_config(request, body.config)
+    if body.name is not None:
+        values["name"] = clean_name(body.name)
+        values["name_key"] = values["name"].casefold()
+    # Atomická výměna: souběžné uložení stejné revize uspěje jen jednou.
+    try:
+        result = db.execute(update(Profile).where(
+            Profile.id == profile_id, Profile.user_id == auth.user.id, Profile.revision == body.revision
+        ).values(**values))
+    except IntegrityError as exc:
+        db.rollback()
+        raise error(409, "name_exists", "Profil s tímto názvem už na serveru existuje.") from exc
     if result.rowcount != 1:
         db.rollback()
-        profile_owned(db, user, profile_id)  # 404, pokud jde o cizí/neexistující profil
-        raise HTTPException(status_code=409, detail="Zastaralá revize profilu")
+        owned(db, auth, profile_id)
+        raise error(409, "revision_conflict", "Profil mezitím změnilo jiné zařízení.")
     db.commit()
-    return serialize(profile_owned(db, user, profile_id))
+    return full(owned(db, auth, profile_id))
 
 
-@router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_profile(
-    profile_id: UUID, user: User = Depends(current_user), db: Session = Depends(get_db)
-):
-    obj = profile_owned(db, user, profile_id)
-    db.delete(obj)
+@router.delete("/{profile_id}", status_code=204)
+def delete_profile(profile_id: uuid.UUID, auth: Auth = Depends(current_auth), db: Session = Depends(get_db)):
+    db.delete(owned(db, auth, profile_id))
     db.commit()
-    return None

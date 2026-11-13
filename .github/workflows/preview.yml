@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TAG: v1.4.0b4
+  TAG: v1.4.0b5
 
 jobs:
   prepare:
@@ -38,8 +38,8 @@ jobs:
           else
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" --draft --prerelease \
-              --title "NetMonitor 1.4.0 beta 4 – testovací verze" \
-              --notes "TESTOVACÍ VERZE: lokální profily, přepínání konfigurací, přihlašovací obrazovka a ruční cloudový přenos. Pojmenované profily, přepínání a ruční upload/download včetně IP/DNS předvoleb. Existující profilové API; server se tímto vydáním nemění. Automatická synchronizace není hotová. Nepoužívat jako stabilní vydání. Před instalací zálohujte config.json. Stabilní verze je v1.3.4."
+              --title "NetMonitor 1.4.0 beta 5 – testovací verze" \
+              --notes "TESTOVACÍ VERZE. Profily (Soukromý, Firemní…) s rychlým přepínáním z widgetu i z ikony v liště, účet s automatickou synchronizací profilů na vlastní server, registrace licenčním klíčem od správce, správa klíčů a účtů přímo v aplikaci (správce s dvoufázovým ověřením). Vyžaduje nový synchronizační server ze složky sync-server (viz sync-server/README.md); bez přihlášení funguje vše lokálně. Před instalací zálohujte config.json. Stabilní verze je v1.3.4."
           fi
 
   build:

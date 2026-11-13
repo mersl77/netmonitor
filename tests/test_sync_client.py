@@ -42,6 +42,8 @@ def test_login_and_profiles(monkeypatch):
         if req.full_url.endswith("/profiles"):
             return Response([{"id": "11111111-1111-4111-8111-111111111111",
                               "name": "Soukromý", "revision": 1}])
+        if req.full_url.endswith("/auth/logout"):
+            return Response({})
         raise AssertionError(req.full_url)
     monkeypatch.setattr("netmonitor.core.sync_client._open", fake)
     client = SyncClient()
@@ -88,3 +90,21 @@ def test_profile_crud_methods_and_payloads(monkeypatch):
     assert calls[0][2]['name'] == 'Domácí'
     assert calls[2][2] == {'config': {'ping': {}}, 'revision': 1}
     assert calls[3][1].endswith('/profiles/' + pid)
+    client.upload(pid, None, 2, 'Nový název')
+    assert calls[-1][2] == {'revision': 2, 'name': 'Nový název'}
+
+
+def test_server_error_code_and_message_are_exposed(monkeypatch):
+    from io import BytesIO as B
+    def fake(req, **kwargs):
+        body = json.dumps({"detail": {"code": "invalid_license_key", "message": "Klíč neplatí."}}).encode()
+        raise HTTPError(req.full_url, 403, "Forbidden", {}, B(body))
+    monkeypatch.setattr('netmonitor.core.sync_client._open', fake)
+    with pytest.raises(SyncError) as exc:
+        SyncClient().register("a@example.org", "heslo-heslo-heslo", "NM-X")
+    assert (exc.value.status, exc.value.code, str(exc.value)) == (403, "invalid_license_key", "Klíč neplatí.")
+
+
+def test_passwords_and_tokens_never_follow_redirects():
+    from netmonitor.core.sync_client import _RejectRedirects
+    assert _RejectRedirects().redirect_request(None, None, 302, "", {}, "https://evil.example") is None

@@ -280,7 +280,6 @@ class TargetTree(QTreeWidget):
 class SettingsDialog(QDialog):
     history_requested = Signal(str)
     check_updates_requested = Signal()
-    sync_finished = Signal(str, object)
 
     def __init__(self, ctrl: Controller, main_widget, parent=None):
         super().__init__(parent)
@@ -291,8 +290,6 @@ class SettingsDialog(QDialog):
         self.resize(820, 640)
         self._loading = False
         self._binds = []
-        self._sync_busy = False
-        self._sync_account = ""
         lay = QVBoxLayout(self)
         self.tabs = QTabWidget()
         lay.addWidget(self.tabs)
@@ -302,8 +299,16 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._tab_targets(), "Ping cíle")
         self.tabs.addTab(self._tab_notifications(), "Upozornění")
         self.tabs.addTab(self._tab_history(), "Historie")
-        self.tabs.addTab(self._tab_profiles(), "Profily")
-        self.tabs.addTab(self._tab_account(), "Účet a synchronizace")
+        from .account_tabs import AccountTab, AdminTab, ProfilesTab
+        self.profiles_tab = ProfilesTab(ctrl, self)
+        self.account_tab = AccountTab(ctrl, self)
+        self.admin_tab = AdminTab(ctrl, self)
+        self.tabs.addTab(self.profiles_tab, "Profily")
+        self.tabs.addTab(self.account_tab, "Účet a synchronizace")
+        self.profiles_tab.switched.connect(self.load)
+        if ctrl.sync is not None:
+            ctrl.sync.changed.connect(self._admin_tab_visibility)
+        self._admin_tab_visibility()
         bottom = QHBoxLayout()
         self.status = hint("Změny se projeví okamžitě a automaticky se uloží.")
         bottom.addWidget(self.status, 1)
@@ -312,8 +317,18 @@ class SettingsDialog(QDialog):
         bottom.addWidget(close)
         lay.addLayout(bottom)
         ctrl.config_changed.connect(self._on_external_change)
-        self.sync_finished.connect(self._sync_done)
         self.load()
+
+    def _admin_tab_visibility(self) -> None:
+        """Karta Správa je vidět jen přihlášenému správci serveru."""
+        sync = self.ctrl.sync
+        wanted = sync is not None and sync.logged_in and sync.client.is_admin
+        index = self.tabs.indexOf(self.admin_tab)
+        if wanted and index < 0:
+            self.tabs.addTab(self.admin_tab, "Správa")
+            self.admin_tab.refresh()
+        elif not wanted and index >= 0:
+            self.tabs.removeTab(index)
 
     # ------------------------------------------------------------------ pomocné
     def _apply(self, fn: Callable[[AppConfig], None]) -> None:
@@ -828,344 +843,3 @@ class SettingsDialog(QDialog):
                       "počty OK/chyb) a zapisují dávkově 1× za minutu – disk se zbytečně nezatěžuje. "
                       "Události výpadků se ukládají okamžitě a odděleně."))
         return w
-
-    # ------------------------------------------------------------------ Profily
-    def _tab_profiles(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.addWidget(hint(
-            "Vytvořte si profil Domácí, Pracovní nebo Zákazník. Nový profil vychází "
-            "z aktuálního nastavení a ihned se aktivuje. Úpravy v ostatních kartách "
-            "se ukládají do aktivního profilu. IP/DNS předvolby najdete v nastavení IP; "
-            "změna profilu sama nemění síťovou konfiguraci operačního systému."
-        ))
-        self.profile_active = hint("")
-        layout.addWidget(self.profile_active)
-        self.profile_selector = QComboBox()
-        layout.addWidget(self.profile_selector)
-        row = QHBoxLayout()
-        for title, callback in (
-            ("Aktivovat / upravit", self._profile_activate),
-            ("Nový profil", self._profile_create),
-            ("Přejmenovat", self._profile_rename),
-            ("Smazat", self._profile_delete),
-        ):
-            button = QPushButton(title)
-            button.clicked.connect(callback)
-            row.addWidget(button)
-        layout.addLayout(row)
-        upload = QPushButton("Nahrát vybraný lokální profil na server")
-        upload.clicked.connect(self._sync_upload)
-        layout.addWidget(upload)
-        layout.addWidget(hint("Cloudové profily — přihlášení na kartě Účet a synchronizace"))
-        refresh = QPushButton("Načíst cloudové profily")
-        refresh.clicked.connect(self._sync_refresh)
-        layout.addWidget(refresh)
-        self.sync_profile_list = QComboBox()
-        layout.addWidget(self.sync_profile_list)
-        row2 = QHBoxLayout()
-        for name, handler in (("Stáhnout vybraný jako nový", self._sync_download),
-                              ("Smazat z cloudu", self._sync_delete)):
-            b = QPushButton(name)
-            b.clicked.connect(handler)
-            row2.addWidget(b)
-        layout.addLayout(row2)
-        self.sync_status = hint("Nepřihlášeno.")
-        layout.addWidget(self.sync_status)
-        layout.addStretch(1)
-        self._profiles_refresh()
-        return w
-
-    def _profiles_refresh(self, selected=None) -> None:
-        store = self.ctrl.profile_store
-        self.profile_selector.blockSignals(True)
-        self.profile_selector.clear()
-        if store is not None:
-            for p in store.list_profiles():
-                self.profile_selector.addItem(p["name"], p["id"])
-            idx = self.profile_selector.findData(selected or store.active_id())
-            self.profile_active.setText("Aktivní profil: " + store.record(store.active_id())["name"])
-            self.profile_selector.setCurrentIndex(idx)
-        self.profile_selector.setEnabled(store is not None)
-        self.profile_selector.blockSignals(False)
-
-    def _profile_create(self) -> None:
-        store = self.ctrl.profile_store
-        if store is None:
-            return
-        name, ok = QInputDialog.getText(self, "Nový profil", "Název profilu:")
-        if not ok:
-            return
-        try:
-            pid = store.create(name, self.ctrl.cfg.copy())
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Profily", str(exc))
-            return
-        self._profiles_refresh(pid)
-        self._profile_activate()
-
-    def _profile_rename(self) -> None:
-        store = self.ctrl.profile_store
-        if store is None:
-            return
-        pid = self.profile_selector.currentData()
-        current = self.profile_selector.currentText()
-        name, ok = QInputDialog.getText(self, "Přejmenovat profil", "Název:", text=current)
-        if not ok:
-            return
-        try:
-            linked = bool(store.record(pid).get("remote_id"))
-            store.rename(pid, name)
-            if linked and name.strip() != current:
-                self.status.setText("Přejmenováno lokálně. Příští upload vytvoří novou cloudovou kopii; původní zůstane zachována.")
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Profily", str(exc))
-            return
-        self._profiles_refresh(pid)
-
-    def _profile_activate(self) -> None:
-        store = self.ctrl.profile_store
-        if store is None:
-            return
-        pid = self.profile_selector.currentData()
-        if pid == store.active_id():
-            return
-        try:
-            # Zápis dokončíme ještě pod původním profilem.
-            self.ctrl._save_timer.stop()
-            self.ctrl._save_now()
-            cfg = store.activate(pid)
-            # Nesynchronizují se místní souřadnice okna.
-            cfg.appearance.x = self.ctrl.cfg.appearance.x
-            cfg.appearance.y = self.ctrl.cfg.appearance.y
-            self.ctrl.update_config(cfg)
-            self.ctrl._save_timer.stop()
-            self.ctrl._save_now()
-        except (OSError, ValueError, KeyError) as exc:
-            QMessageBox.warning(self, "Profily", str(exc))
-            return
-        self._profiles_refresh()
-        self.load()
-        self.status.setText(f"Aktivní profil: {self.profile_selector.currentText()}")
-
-    def _profile_delete(self) -> None:
-        store = self.ctrl.profile_store
-        if store is None:
-            return
-        pid = self.profile_selector.currentData()
-        if pid == store.active_id():
-            QMessageBox.information(self, "Profily", "Nejprve aktivujte jiný profil.")
-            return
-        name = self.profile_selector.currentText()
-        if QMessageBox.question(self, "Smazat profil", f"Opravdu odstranit profil '{name}'?") != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            store.delete(pid)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Profily", str(exc))
-            return
-        self._profiles_refresh()
-
-    # ------------------------------------------------------------------ Účet a synchronizace
-    def _tab_account(self) -> QWidget:
-        from ..core.sync_client import SyncClient
-        from os import environ
-        self.sync_client = SyncClient(environ.get("NETMONITOR_SYNC_URL", "https://sync.zelina.eu"))
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.addWidget(hint("Přihlášení k vlastnímu synchronizačnímu serveru. "
-                              "První účet musí nejprve bezpečně založit správce serveru; "
-                              "veřejná registrace je vypnutá. Žádný výchozí účet ani heslo neexistuje. "
-                              "Heslo a přístupový token zůstávají pouze v paměti aplikace. "
-                              "Zatím jde o ruční přenos profilů, nikoli automatickou synchronizaci."))
-        form = QFormLayout()
-        self.sync_email = QLineEdit()
-        self.sync_email.setPlaceholderText("uzivatel@domena.cz")
-        self.sync_password = QLineEdit()
-        self.sync_password.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("E-mail", self.sync_email)
-        form.addRow("Heslo", self.sync_password)
-        layout.addLayout(form)
-        row = QHBoxLayout()
-        for name, handler in (("Přihlásit", self._sync_login),
-                              ("Odhlásit", self._sync_logout),
-                              ("Načíst cloudové profily", self._sync_refresh)):
-            b = QPushButton(name)
-            b.clicked.connect(handler)
-            row.addWidget(b)
-        layout.addLayout(row)
-        self.account_status = hint("Nepřihlášeno. Profily spravujte na kartě Profily.")
-        layout.addWidget(self.account_status)
-        layout.addStretch(1)
-        return w
-
-    def _sync_message(self, message: str) -> None:
-        self.sync_status.setText(message)
-        self.account_status.setText(message)
-
-    def _sync_job(self, key: str, func: Callable[[], object]) -> None:
-        if self._sync_busy:
-            return
-        self._sync_busy = True
-        self.tabs.setEnabled(False)
-        # Veškeré síťové požadavky běží mimo vlákno GUI.
-        self._sync_message("Komunikuji se serverem…")
-
-        def wrapped():
-            try:
-                return (True, func())
-            except Exception as exc:
-                return (False, str(exc))
-
-        self.ctrl._run_bg("sync-" + key, wrapped,
-                          lambda result: self.sync_finished.emit(key, result))
-
-    def _sync_done(self, key: str, result: object) -> None:
-        self._sync_busy = False
-        self.tabs.setEnabled(True)
-        ok, value = result
-        if not ok:
-            self._sync_message("Chyba: " + str(value))
-            return
-        if key == "login":
-            self._sync_account = value
-            self.sync_email.setReadOnly(True)
-            self.sync_password.clear()
-            self.tabs.setCurrentIndex(6)
-            self._sync_message("Přihlášeno. Přístupový token platí omezenou dobu.")
-            self._sync_refresh()
-        elif key == "refresh":
-            self.sync_profile_list.clear()
-            for p in value:
-                if isinstance(p, dict) and p.get("id") and p.get("name"):
-                    self.sync_profile_list.addItem(p["name"], p)
-            self._sync_message("Cloudové profily načteny." if self.sync_profile_list.count()
-                                     else "Cloud je prázdný. Vyberte lokální profil a nahrajte jej na server.")
-        elif key == "upload":
-            local_id, remote_id, revision, account, server = value
-            try:
-                self.ctrl.profile_store.bind_remote(local_id, remote_id, revision, account, server)
-            except (OSError, ValueError) as exc:
-                self._sync_message("Cloud uložen, ale lokální vazba selhala: " + str(exc))
-                return
-            self._sync_message("Profil uložen na server. Načítám seznam…")
-            self._sync_refresh()
-        elif key == "delete":
-            try:
-                self.ctrl.profile_store.unbind_remote(*value)
-            except (OSError, ValueError) as exc:
-                self._sync_message("Cloud smazán, lokální vazbu nelze odstranit: " + str(exc))
-                return
-            self._sync_message("Cloudový profil smazán. Lokální profily zůstávají zachovány.")
-            self._sync_refresh()
-        elif key == "download":
-            try:
-                from ..core.sync_config import merge_shared
-                remote, base, account, server = value
-                from uuid import UUID
-                UUID(remote["id"])
-                if not isinstance(remote.get("revision"), int) or remote["revision"] < 1:
-                    raise ValueError("Neplatná revize profilu")
-                config = merge_shared(remote["config"], base)
-                store = self.ctrl.profile_store
-                existing = {p["name"].casefold() for p in store.list_profiles()}
-                name = str(remote["name"]).strip()[:100] or "Cloudový profil"
-                candidate, i = name, 2
-                while candidate.casefold() in existing:
-                    suffix = f" ({i})"
-                    candidate = name[:100-len(suffix)] + suffix
-                    i += 1
-                local_id = store.create(candidate, config)
-                store.bind_remote(local_id, remote["id"], remote["revision"], account, server)
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                self._sync_message("Stažení nelze uložit: " + str(exc))
-                return
-            self._sync_message("Profil stažen a uložen lokálně; aktivujte jej na kartě Profily.")
-            self._profiles_refresh(local_id)
-
-    def _sync_login(self) -> None:
-        email = self.sync_email.text().strip()
-        password = self.sync_password.text()
-        if not email or not password:
-            self._sync_message("Vyplňte e-mail a heslo.")
-            return
-        def login():
-            self.sync_client.login(email, password)
-            return email.casefold()
-        self._sync_job("login", login)
-
-    def _sync_logout(self) -> None:
-        self.sync_client.logout()
-        self._sync_account = ""
-        self.sync_email.setReadOnly(False)
-        self.sync_password.clear()
-        self.sync_profile_list.clear()
-        self._sync_message("Odhlášeno.")
-
-    def _sync_refresh(self) -> None:
-        self._sync_job("refresh", self.sync_client.profiles)
-
-    def _sync_upload(self) -> None:
-        store = self.ctrl.profile_store
-        if store is None:
-            self._sync_message("Lokální profily nejsou dostupné.")
-            return
-        self.ctrl._save_timer.stop()
-        try:
-            self.ctrl._save_now()
-        except OSError as exc:
-            self._sync_message("Konfiguraci nelze uložit: " + str(exc))
-            return
-        local_id = self.profile_selector.currentData()
-        record = store.record(local_id)
-        name = record["name"]
-        from ..core.sync_config import export_shared
-        config = export_shared(store.load(local_id))
-        account = self._sync_account
-        server = self.sync_client.base_url
-
-        def upload():
-            if (record.get("remote_id") and record.get("remote_account") == account
-                    and record.get("remote_server") == server):
-                result = self.sync_client.upload(
-                    record["remote_id"], config, record["remote_revision"]
-                )
-            else:
-                result = self.sync_client.create(name, config)
-            return (local_id, result["id"], result["revision"], account, server)
-
-        self._sync_job("upload", upload)
-
-    def _sync_download(self) -> None:
-        store = self.ctrl.profile_store
-        if store is None:
-            return
-        item = self.sync_profile_list.currentData()
-        if not isinstance(item, dict):
-            self._sync_message("Vyberte cloudový profil.")
-            return
-        profile_id = item["id"]
-        account = self._sync_account
-        server = self.sync_client.base_url
-
-        base = self.ctrl.cfg.copy()
-
-        def download():
-            result = self.sync_client.download(profile_id)
-            return result, base, account, server
-
-        self._sync_job("download", download)
-
-    def _sync_delete(self) -> None:
-        item = self.sync_profile_list.currentData()
-        if not isinstance(item, dict):
-            self._sync_message("Vyberte cloudový profil.")
-            return
-        if QMessageBox.question(self, "Smazat z cloudu",
-                                f"Smazat '{item['name']}' ze serveru? Lokální kopie zůstanou.") != QMessageBox.StandardButton.Yes:
-            return
-        account, server = self._sync_account, self.sync_client.base_url
-        def delete():
-            self.sync_client.delete(item["id"])
-            return item["id"], account, server
-        self._sync_job("delete", delete)

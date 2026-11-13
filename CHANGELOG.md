@@ -1,3 +1,13 @@
+## 1.4.0b5 (beta)
+
+- **Přepínání profilů** (Soukromý, Firemní, Zákazník…) jedním kliknutím: pravé tlačítko na widgetu nebo na ikoně v liště → Profil. Každý profil má vlastní ping cíle (IP adresy, domény, sekce), upozornění a uložené IP/DNS předvolby. Poloha a velikost okna zůstávají podle počítače.
+- **Automatická synchronizace na server**: po přihlášení se profily samy nahrávají a stahují na další počítače (po změně, po startu a každých 5 minut). Přejmenování i smazání se přenáší. Bez přihlášení funguje vše lokálně.
+- **Konflikty se neřeší potichu**: když se stejný profil změní na dvou počítačích, aplikace se zeptá – verze z tohoto počítače, verze ze serveru, nebo obě.
+- **Registrace licenčním klíčem**: nový účet lze založit jen s klíčem od správce. Klíč má poznámku (pro koho je), počet použití a volitelnou platnost.
+- **Karta Správa** (jen správce): vytváření a zneplatnění klíčů, přehled účtů, blokování účtu. Správce se přihlašuje heslem a kódem z autentikátoru (TOTP).
+- Přihlášení vydrží restart: na počítači se ukládá jen obnovovací token (Windows: šifrováno DPAPI, Linux/macOS: soubor 0600), heslo nikdy.
+- **Nový synchronizační server** ve složce `sync-server` (Docker stack pro Portainer): limity požadavků, zamykání účtu po chybných pokusech, rotace tokenů, klíče uložené jen jako otisk. Nahrazuje rozpracovaný server z b4.
+
 ## 1.4.0b4 (beta)
 
 - Karta Profily spojuje pojmenované lokální profily a ruční cloudový přenos.

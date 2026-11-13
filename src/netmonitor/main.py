@@ -162,6 +162,8 @@ def main(argv=None) -> int:
         try:
             profile_store.initialize(cfg)
             ctrl.profile_store = profile_store
+            from .gui.sync_service import SyncService
+            ctrl.sync = SyncService(ctrl)
         except (OSError, ValueError, KeyError) as exc:
             log.error("Profily se nepodařilo načíst: %s; běží původní lokální konfigurace", exc)
     widget = MainWidget(ctrl)
@@ -291,6 +293,10 @@ def main(argv=None) -> int:
 
     if not args.screenshot:
         updates.start()
+    if ctrl.sync is not None:
+        from .gui.account_tabs import ask_conflicts
+        ctrl.sync.conflicts_found.connect(lambda found: ask_conflicts(ctrl.sync, found, None))
+        ctrl.sync.start()
 
     if args.screenshot:
         QTimer.singleShot(int(args.screenshot_delay * 1000),

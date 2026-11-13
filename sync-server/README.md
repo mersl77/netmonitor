@@ -1,87 +1,89 @@
-# NetMonitor Sync API – integrační patch
+# NetMonitor Sync – server pro účty, licenční klíče a profily
 
-Tato složka obsahuje zdrojový modul pro **existující** FastAPI server
-na hostu `aplikacni` (`/opt/netmonitor-sync/api/app`).
+Samostatný server (FastAPI + PostgreSQL), se kterým NetMonitor 1.4 synchronizuje profily.
+Image: `ghcr.io/mersl77/netmonitor-sync` (sestavuje GitHub Actions z této složky).
 
-**Stav:** kód je ve vývojové větvi GitHubu. **Na server nebyl nasazen ani
-ověřen s reálnou PostgreSQL databází.** Není součástí desktopového instalátoru.
+**Stav:** kód je pokrytý testy (server samostatně i s desktopovým klientem). Nasazení na
+`sync.zelina.eu` provádí správce podle postupu níže – z vývojové relace nasazeno nebylo.
 
-## Vlastní schéma
+## Co server hlídá
 
-Modul `app/profiles.py` předpokládá současné serverové moduly:
+| Ochrana | Jak |
+|---|---|
+| Registrace | jen s platným licenčním klíčem; `REGISTRATION_ENABLED=false` ji vypne úplně |
+| Licenční klíč | 100 bitů náhody, v databázi jen otisk SHA-256, počet použití, volitelná platnost, zneplatnění |
+| Zaplavení požadavky | limit na IP: 240 požadavků/min celkem, 10 přihlášení/5 min, 5 registrací/hod (HTTP 429) |
+| Hádání hesla | Argon2id; po 5 chybných pokusech se účet na 15 minut zamkne |
+| Správce | správa klíčů a účtů jen s dvoufázovým ověřením (TOTP), kód nelze použít dvakrát |
+| Relace | přístupový token 15 min, obnovovací token se při každém použití vymění; použití starého tokenu relaci ukončí |
+| Data | profil vidí jen jeho účet (ani správce ne); max. 20 profilů na účet, 512 KiB na profil |
+| Souběh | zápis profilu kontroluje revizi; konflikt = HTTP 409, nic se nepřepíše |
 
-- `app.database.get_db` – SQLAlchemy Session z PostgreSQL
-- `app.models.User` – UUID primární klíč
-- `app.models.Profile` – UUID id, UUID user_id, name, config (JSONB),
-  revision, updated_at
-- Docker secret `/run/secrets/jwt_secret` s podpisovým klíčem pro
-  `/auth/login` (HS256, issuer `netmonitor-sync`,
-  audience `netmonitor-desktop`, sub = UUID uživatele)
+## Nasazení v Portaineru
 
-Po instalaci patchu na serveru je nutné v `app/main.py` přidat:
+1. **Stacks → Add stack → Web editor**, název `netmonitor-sync`, vložit obsah `docker-compose.yml`.
+2. **Environment variables**:
 
-```python
-from .profiles import router as profiles_router
-app.include_router(profiles_router)
+   | Název | Hodnota |
+   |---|---|
+   | `POSTGRES_PASSWORD` | náhodné heslo, např. výstup `openssl rand -hex 24` |
+   | `JWT_SECRET` | min. 32 znaků, např. výstup `openssl rand -hex 32` |
+   | `PROXY_NETWORK` | Docker síť reverzní proxy (výchozí `nginx-proxy-manager_default`) |
+   | `API_BIND` | volitelné, výchozí `127.0.0.1:8766` |
+
+3. **Deploy the stack.** Kontrola na hostiteli: `curl -s http://127.0.0.1:8766/health`.
+4. V Nginx Proxy Manageru vytvořit Proxy Host `sync.zelina.eu` → `netmonitor-sync-api`, port `8000`
+   (schéma http), zapnout SSL (Let's Encrypt, Force SSL).
+5. **První správce** – Portainer → kontejner `api` → Console (`/bin/sh`):
+
+   ```sh
+   python -m app.cli create-admin
+   ```
+
+   E-mail a heslo se zadávají interaktivně (heslo skrytě, nikam se neloguje).
+6. V NetMonitoru: Nastavení → Účet a synchronizace → přihlásit se → karta **Správa** →
+   zapnout dvoufázové ověření. Teprve potom jde vytvářet licenční klíče.
+
+Stack používá vlastní svazek `netmonitor-sync_db-data`. Rozpracovaný server z bety 1.4.0b4
+(`/opt/netmonitor-sync`) má jiné schéma tabulek – nový stack nasazujte s čistou databází a starý vypněte.
+
+## Správa z příkazové řádky (Console kontejneru `api`)
+
+```sh
+python -m app.cli create-admin                 # nový správce / povýšení existujícího účtu
+python -m app.cli create-key "Pavel – kancelář" --days 30
+python -m app.cli list-users
+python -m app.cli reset-password uzivatel@domena.cz
+python -m app.cli reset-totp spravce@domena.cz # ztracený telefon správce
 ```
 
-**Neaplikovat bez kontroly skutečného serverového kódu**, modelů,
-existujícího JWT payloadu a Alembic revizí. Neměnit produkční databázi
-nebo stávající tabulky bez zálohy. `user_sessions` ještě nemá provedenou
-migraci; patch ji nepoužívá.
+## API
 
-## Endpointy
-
-| HTTP | Cesta | Význam |
+| Metoda | Cesta | Význam |
 |---|---|---|
-| POST | `/auth/login` | Existující přihlášení, vrací `access_token` |
-| GET | `/profiles` | Seznam vlastních profilů |
-| POST | `/profiles` | Nový profil `{name, config}` |
-| GET | `/profiles/{uuid}` | Kompletní profil |
-| PUT | `/profiles/{uuid}` | Aktualizace `{config,revision}`; 409 při konfliktu |
-| DELETE | `/profiles/{uuid}` | Smazání vlastního profilu |
+| GET | `/health` | stav serveru |
+| POST | `/auth/register` | `{email, password, license_key}` |
+| POST | `/auth/login` | `{email, password, totp_code?}` → přístupový a obnovovací token |
+| POST | `/auth/refresh`, `/auth/logout`, `/auth/password` | obnovení, odhlášení, změna hesla |
+| POST | `/auth/totp/setup`, `/auth/totp/enable` | zapnutí dvoufázového ověření |
+| GET/POST | `/profiles` | seznam / nový profil |
+| GET/PUT/DELETE | `/profiles/{id}` | čtení / zápis s revizí (i přejmenování) / smazání |
+| GET/POST | `/admin/keys`, `/admin/keys/{id}/revoke` | licenční klíče (správce s 2FA) |
+| GET/POST | `/admin/users`, `/admin/users/{id}/disable\|enable` | účty (správce s 2FA) |
 
-Každý profil má vlastníka z JWT; cizí/neexistující profil vrací 404.
-Zápis profilu kontroluje revizi přímo v atomickém databázovém UPDATE.
-Heslo není součástí profilu ani synchronizované konfigurace.
+Chyby mají tvar `{"detail": {"code": "...", "message": "..."}}`.
 
-## Bezpečnostní nedodělky před zveřejněním na internet
+## Vývoj a testy
 
-- ochrana proti hrubé síle na `/auth/login` (rate limiting + monitoring);
-- refresh tokeny, rotace, revokace relací po odhlášení;
-- registrace jen pro správce nebo s pozvánkou;
-- kontrola serverového souboru `app/models.py` proti očekávanému schématu,
-  reálné API a migrační testy;
-- HTTPS přes NPM, přístupová pravidla a test certifikátu;
-- jasné omezení validovaných klíčů konfiguračního JSON a kontrola
-  chování při mimořádně dlouhých polích.
+```sh
+pip install -r requirements-dev.txt
+python -m pytest -q tests
+JWT_SECRET=$(openssl rand -hex 32) DATABASE_URL=sqlite:///dev.sqlite3 uvicorn app.asgi:app --port 8766
+```
 
-Dokud tyto kontroly neproběhnou, **nezveřejňovat službu na
-`sync.zelina.eu`**. Nový desktopový klient nyní umí ruční přenos, ale
-**ne kontinuální automatickou synchronizaci**.
+## Známá omezení
 
-
-## Založení prvního účtu (nově připraveno v GitHubu)
-
-Na serveru zatím nebyl vytvořen žádný uživatel; registrace přes veřejný
-`/auth/register` je standardně vypnutá. **Neexistuje žádné přednastavené
-jméno nebo heslo.** Z důvodu ochrany před cizí registrací není správné
-nechat endpoint bez omezení otevřený do internetu.
-
-Připraven je `sync-server/bootstrap_user.py`, který:
-
-- načte e-mail a heslo interaktivně (heslo bez zobrazení);
-- vyžaduje alespoň 12 znaků;
-- hash hesla ukládá pomocí Argon2id;
-- dovolí vytvořit pouze **prvního** uživatele, pokud je tabulka prázdná;
-- po úspěchu lze tento e-mail a heslo použít v desktopovém přihlášení.
-
-Nejprve je nutné **ověřit** skutečný model `User` a stav kontejneru,
-zkopírovat skript do kontejneru API a spustit ho interaktivně s přístupem
-k `app.database`. Skript zatím **není nasazen ani spuštěn**.
-Nikdy nepřidávat heslo do Compose, Git repozitáře ani shell historie.
-
-Toto řeší **první účet**, nikoli samoobslužnou registraci dalších
-uživatelů. Pro další účty bude potřeba pozvánkový mechanismus,
-administrační API nebo samostatný bezpečný administrační příkaz.
-E-mailové ověření a obnova hesla dosud nejsou implementovány.
+- Limit požadavků je v paměti jednoho procesu (po restartu kontejneru se nuluje).
+- Schéma vzniká přes `create_all`; migrační nástroj (Alembic) zatím není potřeba ani nasazen.
+- Obnova zapomenutého hesla e-mailem není – heslo resetuje správce příkazem `reset-password`.
+- Zálohování databáze (pg_dump svazku) si řeší správce serveru.

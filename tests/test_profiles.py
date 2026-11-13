@@ -65,13 +65,33 @@ def test_invalid_profile_id_cannot_escape_store(tmp_path):
     with pytest.raises(ValueError):
         store.load("../config")
 
-def test_rename_keeps_original_cloud_copy_and_next_upload_uses_new_name(tmp_path):
+def test_rename_keeps_server_binding_and_delete_is_queued(tmp_path):
+    from uuid import uuid4
+    store = ProfileStore(tmp_path / 'profiles')
+    store.initialize(AppConfig.from_dict({}))
+    remote = str(uuid4())
+    pid = store.create('Firma', AppConfig.from_dict({}))
+    store.bind_remote(pid, remote, 1, 'Test@Example.org', 'https://sync.zelina.eu/', 'abc')
+    store.rename(pid, 'Práce')
+    rec = store.record(pid)
+    assert rec['name'] == 'Práce' and rec['remote_id'] == remote and rec['synced_hash'] == 'abc'
+    assert rec['remote_account'] == 'test@example.org' and rec['remote_server'] == 'https://sync.zelina.eu'
+    store.delete(pid)
+    assert store.pending_deletes('test@example.org', 'https://sync.zelina.eu') == [remote]
+    assert store.pending_deletes('jiny@example.org', 'https://sync.zelina.eu') == []
+    store.clear_pending_delete(remote)
+    assert store.pending_deletes('test@example.org', 'https://sync.zelina.eu') == []
+
+
+def test_unbind_local_only_and_unique_name(tmp_path):
     from uuid import uuid4
     store = ProfileStore(tmp_path / 'profiles')
     store.initialize(AppConfig.from_dict({}))
     pid = store.active_id()
-    store.bind_remote(pid, str(uuid4()), 1, 'test@example.org', 'https://sync.zelina.eu')
-    store.rename(pid, 'Domácí')
-    assert store.record(pid)['name'] == 'Domácí'
-    assert 'remote_id' not in store.record(pid)
-    assert store.load(pid).ping.targets
+    store.bind_remote(pid, str(uuid4()), 3, 'a@example.org', 'https://sync.zelina.eu', 'h')
+    store.unbind(pid, local_only=True)
+    assert store.record(pid) == {'id': pid, 'name': 'Soukromý', 'local_only': True}
+    store.unbind(pid)
+    assert 'local_only' not in store.record(pid)
+    assert store.unique_name('soukromý') == 'soukromý (2)'
+    assert store.unique_name('Soukromý', skip_id=pid) == 'Soukromý'

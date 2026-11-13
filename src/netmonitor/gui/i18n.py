@@ -10,6 +10,8 @@ _lang = "cs"
 EN: dict[str, str] = {
     "SÍŤOVÉ INFORMACE": "NETWORK INFO",
     "Nastavení…": "Settings…",
+    "Profil": "Profile",
+    "Spravovat profily…": "Manage profiles…",
     "Historie…": "History…",
     "Nastavit IP adresu…": "Set IP address…",
     "Režim zobrazení": "Display mode",
