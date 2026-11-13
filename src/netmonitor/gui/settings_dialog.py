@@ -298,6 +298,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._tab_targets(), "Ping cíle")
         self.tabs.addTab(self._tab_notifications(), "Upozornění")
         self.tabs.addTab(self._tab_history(), "Historie")
+        self.tabs.addTab(self._tab_profiles(), "Profily")
         bottom = QHBoxLayout()
         self.status = hint("Změny se projeví okamžitě a automaticky se uloží.")
         bottom.addWidget(self.status, 1)
@@ -821,3 +822,112 @@ class SettingsDialog(QDialog):
                       "počty OK/chyb) a zapisují dávkově 1× za minutu – disk se zbytečně nezatěžuje. "
                       "Události výpadků se ukládají okamžitě a odděleně."))
         return w
+
+    # ------------------------------------------------------------------ Profily
+    def _tab_profiles(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.addWidget(hint(
+            "Profily jsou zatím uložené pouze na tomto počítači. "
+            "Přihlášení a synchronizace se serverem budou dostupné až po dokončení API."
+        ))
+        self.profile_selector = QComboBox()
+        layout.addWidget(self.profile_selector)
+        row = QHBoxLayout()
+        for title, callback in (
+            ("Aktivovat", self._profile_activate),
+            ("Nový profil", self._profile_create),
+            ("Přejmenovat", self._profile_rename),
+            ("Smazat", self._profile_delete),
+        ):
+            button = QPushButton(title)
+            button.clicked.connect(callback)
+            row.addWidget(button)
+        layout.addLayout(row)
+        layout.addStretch(1)
+        self._profiles_refresh()
+        return w
+
+    def _profiles_refresh(self) -> None:
+        store = self.ctrl.profile_store
+        self.profile_selector.blockSignals(True)
+        self.profile_selector.clear()
+        if store is not None:
+            for p in store.list_profiles():
+                self.profile_selector.addItem(p["name"], p["id"])
+            idx = self.profile_selector.findData(store.active_id())
+            self.profile_selector.setCurrentIndex(idx)
+        self.profile_selector.setEnabled(store is not None)
+        self.profile_selector.blockSignals(False)
+
+    def _profile_create(self) -> None:
+        store = self.ctrl.profile_store
+        if store is None:
+            return
+        name, ok = QInputDialog.getText(self, "Nový profil", "Název profilu:")
+        if not ok:
+            return
+        try:
+            store.create(name, self.ctrl.cfg.copy())
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Profily", str(exc))
+            return
+        self._profiles_refresh()
+        self.status.setText("Profil vytvořen jako kopie aktivního nastavení.")
+
+    def _profile_rename(self) -> None:
+        store = self.ctrl.profile_store
+        if store is None:
+            return
+        pid = self.profile_selector.currentData()
+        current = self.profile_selector.currentText()
+        name, ok = QInputDialog.getText(self, "Přejmenovat profil", "Název:", text=current)
+        if not ok:
+            return
+        try:
+            store.rename(pid, name)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Profily", str(exc))
+            return
+        self._profiles_refresh()
+
+    def _profile_activate(self) -> None:
+        store = self.ctrl.profile_store
+        if store is None:
+            return
+        pid = self.profile_selector.currentData()
+        if pid == store.active_id():
+            return
+        try:
+            # Zápis dokončíme ještě pod původním profilem.
+            self.ctrl._save_timer.stop()
+            self.ctrl._save_now()
+            cfg = store.activate(pid)
+            # Nesynchronizují se místní souřadnice okna.
+            cfg.appearance.x = self.ctrl.cfg.appearance.x
+            cfg.appearance.y = self.ctrl.cfg.appearance.y
+            self.ctrl.update_config(cfg)
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Profily", str(exc))
+            return
+        self._profiles_refresh()
+        self.load()
+        self.status.setText(f"Aktivní profil: {self.profile_selector.currentText()}")
+
+    def _profile_delete(self) -> None:
+        store = self.ctrl.profile_store
+        if store is None:
+            return
+        pid = self.profile_selector.currentData()
+        if pid == store.active_id():
+            QMessageBox.information(self, "Profily", "Nejprve aktivujte jiný profil.")
+            return
+        name = self.profile_selector.currentText()
+        if QMessageBox.question(self, "Smazat profil", f"Opravdu odstranit profil '{name}'?") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            store.delete(pid)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Profily", str(exc))
+            return
+        self._profiles_refresh()
