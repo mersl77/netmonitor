@@ -47,10 +47,11 @@ class UpdateManager(QObject):
         if not self.ctrl.cfg.network.external_api and not manual:
             return
         src = g.update_url or upd.DEFAULT_SOURCE
+        allow_beta = g.receive_beta_updates
 
         def job():
             try:
-                return upd.check(src), ""
+                return upd.check(src, allow_beta=allow_beta), ""
             except upd.UpdateError as e:
                 return None, str(e)
         self.ctrl._run_bg("update-check", job, lambda r: self._checked(r, manual))
