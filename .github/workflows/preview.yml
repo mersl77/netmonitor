@@ -37,6 +37,7 @@ jobs:
               --target "$GITHUB_SHA" --draft --prerelease \
               --title "NetMonitor 1.4.0 beta 1 – testovací verze" \
               --notes "TESTOVACÍ VERZE: lokální profily, přepínání konfigurací, přihlašovací obrazovka a ruční cloudový přenos. Synchronizační API na serveru aplikacni zatím nebylo nasazeno. Automatická synchronizace není hotová. Nepoužívat jako stabilní vydání. Před instalací zálohujte config.json. Stabilní verze je v1.3.4."
+          fi
 
   build:
     needs: prepare
