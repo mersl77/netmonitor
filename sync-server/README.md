@@ -59,3 +59,29 @@ Heslo není součástí profilu ani synchronizované konfigurace.
 Dokud tyto kontroly neproběhnou, **nezveřejňovat službu na
 `sync.zelina.eu`**. Nový desktopový klient nyní umí ruční přenos, ale
 **ne kontinuální automatickou synchronizaci**.
+
+
+## Založení prvního účtu (nově připraveno v GitHubu)
+
+Na serveru zatím nebyl vytvořen žádný uživatel; registrace přes veřejný
+`/auth/register` je standardně vypnutá. **Neexistuje žádné přednastavené
+jméno nebo heslo.** Z důvodu ochrany před cizí registrací není správné
+nechat endpoint bez omezení otevřený do internetu.
+
+Připraven je `sync-server/bootstrap_user.py`, který:
+
+- načte e-mail a heslo interaktivně (heslo bez zobrazení);
+- vyžaduje alespoň 12 znaků;
+- hash hesla ukládá pomocí Argon2id;
+- dovolí vytvořit pouze **prvního** uživatele, pokud je tabulka prázdná;
+- po úspěchu lze tento e-mail a heslo použít v desktopovém přihlášení.
+
+Nejprve je nutné **ověřit** skutečný model `User` a stav kontejneru,
+zkopírovat skript do kontejneru API a spustit ho interaktivně s přístupem
+k `app.database`. Skript zatím **není nasazen ani spuštěn**.
+Nikdy nepřidávat heslo do Compose, Git repozitáře ani shell historie.
+
+Toto řeší **první účet**, nikoli samoobslužnou registraci dalších
+uživatelů. Pro další účty bude potřeba pozvánkový mechanismus,
+administrační API nebo samostatný bezpečný administrační příkaz.
+E-mailové ověření a obnova hesla dosud nejsou implementovány.
