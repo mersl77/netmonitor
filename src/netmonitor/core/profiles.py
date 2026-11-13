@@ -61,8 +61,13 @@ class ProfileStore:
         with self._file(profile_id).open(encoding="utf-8") as f:
             return AppConfig.from_dict(json.load(f))
 
+    def save(self, profile_id: str, cfg: AppConfig) -> None:
+        if profile_id not in {p["id"] for p in self.list_profiles()}:
+            raise ValueError("Neznámý profil")
+        atomic_write_json(self._file(profile_id), cfg.to_dict())
+
     def save_active(self, cfg: AppConfig) -> None:
-        atomic_write_json(self._file(self.active_id()), cfg.to_dict())
+        self.save(self.active_id(), cfg)
 
     def create(self, name: str, cfg: AppConfig) -> str:
         name = name.strip()
