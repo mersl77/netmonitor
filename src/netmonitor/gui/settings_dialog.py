@@ -945,6 +945,8 @@ class SettingsDialog(QDialog):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.addWidget(hint("Přihlášení k vlastnímu synchronizačnímu serveru. "
+                              "První účet musí nejprve bezpečně založit správce serveru; "
+                              "veřejná registrace je vypnutá. Žádný výchozí účet ani heslo neexistuje. "
                               "Heslo a přístupový token zůstávají pouze v paměti aplikace. "
                               "Zatím jde o ruční přenos profilů, nikoli automatickou synchronizaci."))
         form = QFormLayout()
