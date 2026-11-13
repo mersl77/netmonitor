@@ -28,7 +28,7 @@ spuštění staženého souboru zobrazí „Systém Windows ochránil váš poč
 *Další informace → Přesto spustit*. Pravost souboru lze ověřit otiskem SHA-256 uvedeným u souboru v Releases
 (`Get-FileHash .\NetMonitor-<verze>-setup.exe`). Aktualizace stahované samotnou aplikací se ověřují automaticky.
 
-## Profily a synchronizace (1.4 beta)
+## Profily a synchronizace
 
 Profily (Soukromý, Firemní…) se přepínají pravým tlačítkem na widgetu nebo ikoně v liště → **Profil**.
 Po přihlášení k vlastnímu serveru se synchronizují mezi počítači; nový účet vyžaduje licenční klíč od správce.

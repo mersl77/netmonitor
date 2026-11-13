@@ -1,6 +1,6 @@
 # NetMonitor 1.4 – profily, účet a synchronizace
 
-> Stav k betě 1.4.0b6 (13. 11. 2026), větev `feature/account-profiles-sync`. Stabilní vydání je v1.3.4.
+> Stav k betě 1.4.0 (13. 11. 2026), větev `feature/account-profiles-sync`. Stabilní vydání je v1.3.4.
 
 ## Profily
 
@@ -70,6 +70,6 @@ Přihlášení přežije restart: ukládá se jen obnovovací token (Windows: DP
 - [x] Automatické testy: klient proti skutečnému kódu serveru (dva počítače, konflikty, klíče, 2FA), GUI offscreen.
 - [x] Klient ↔ server přes skutečné HTTP na localhostu (Linux).
 - [x] Server nasazen na `sync.zelina.eu` (13. 11. 2026, Docker Compose v `/opt/netmonitor-sync-v2`), přihlášení správce a 2FA z Windows ověřil uživatel.
-- [ ] Novinky bety 6 (QR, pozvánka, IP předvolba, profil podle sítě) na skutečném počítači.
+- [ ] QR kód, pozvánka, IP předvolba a profil podle sítě na skutečném počítači (zatím jen automatické testy).
 - [ ] Dva skutečné počítače (Windows + Linux) proti produkčnímu serveru.
 - [ ] Šifrování tokenu DPAPI na Windows ověřuje jen test v CI.

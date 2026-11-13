@@ -19,6 +19,23 @@ Image: `ghcr.io/mersl77/netmonitor-sync` (sestavuje GitHub Actions z této slož
 | Data | profil vidí jen jeho účet (ani správce ne); max. 20 profilů na účet, 512 KiB na profil |
 | Souběh | zápis profilu kontroluje revizi; konflikt = HTTP 409, nic se nepřepíše |
 
+## Nasazení přes SSH (Docker Compose)
+
+Takto je nasazen `sync.zelina.eu` (složka `/opt/netmonitor-sync-v2`):
+
+```sh
+( set -e
+mkdir -p /opt/netmonitor-sync-v2 && cd /opt/netmonitor-sync-v2
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/mersl77/netmonitor/main/sync-server/docker-compose.yml
+if [ ! -f .env ]; then printf 'POSTGRES_PASSWORD=%s\nJWT_SECRET=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 32)" > .env; fi
+chmod 600 .env
+docker compose up -d --wait
+curl -s http://127.0.0.1:8766/health )
+docker compose exec api python -m app.cli create-admin
+```
+
+Aktualizace serveru: `cd /opt/netmonitor-sync-v2 && docker compose pull && docker compose up -d --wait`.
+
 ## Nasazení v Portaineru
 
 1. **Stacks → Add stack → Web editor**, název `netmonitor-sync`, vložit obsah `docker-compose.yml`.

@@ -1,33 +1,15 @@
-## 1.4.0b6 (beta)
-
-- **QR kód pro dvoufázové ověření**: na kartě Správa stačí kód naskenovat autentikátorem; ruční zadání klíče zůstává.
-- **Kopírovat pozvánku**: u nově vytvořeného licenčního klíče zkopíruje hotovou zprávu s odkazem ke stažení, postupem registrace a klíčem.
-- **IP/DNS předvolba profilu**: profilu lze přiřadit uloženou předvolbu (Nastavení → Profily → Automatika). Po přepnutí se aplikace zeptá a otevře dialog Nastavit IP adresu s načtenými hodnotami; sama nic nemění.
-- **Profil podle sítě**: profil lze spojit s aktuální sítí (Wi-Fi podle názvu, kabel podle IP a MAC adresy brány). Po připojení k ní aplikace nabídne přepnutí. Spojení platí jen pro daný počítač.
-- Synchronizace: stejná změna provedená na dvou počítačích už nevyvolá dotaz na konflikt.
-- Server se nemění (zůstává 1.0.0).
-
-## 1.4.0b5 (beta)
-
-- **Přepínání profilů** (Soukromý, Firemní, Zákazník…) jedním kliknutím: pravé tlačítko na widgetu nebo na ikoně v liště → Profil. Každý profil má vlastní ping cíle (IP adresy, domény, sekce), upozornění a uložené IP/DNS předvolby. Poloha a velikost okna zůstávají podle počítače.
-- **Automatická synchronizace na server**: po přihlášení se profily samy nahrávají a stahují na další počítače (po změně, po startu a každých 5 minut). Přejmenování i smazání se přenáší. Bez přihlášení funguje vše lokálně.
-- **Konflikty se neřeší potichu**: když se stejný profil změní na dvou počítačích, aplikace se zeptá – verze z tohoto počítače, verze ze serveru, nebo obě.
-- **Registrace licenčním klíčem**: nový účet lze založit jen s klíčem od správce. Klíč má poznámku (pro koho je), počet použití a volitelnou platnost.
-- **Karta Správa** (jen správce): vytváření a zneplatnění klíčů, přehled účtů, blokování účtu. Správce se přihlašuje heslem a kódem z autentikátoru (TOTP).
-- Přihlášení vydrží restart: na počítači se ukládá jen obnovovací token (Windows: šifrováno DPAPI, Linux/macOS: soubor 0600), heslo nikdy.
-- **Nový synchronizační server** ve složce `sync-server` (Docker stack pro Portainer): limity požadavků, zamykání účtu po chybných pokusech, rotace tokenů, klíče uložené jen jako otisk. Nahrazuje rozpracovaný server z b4.
-
-## 1.4.0b4 (beta)
-
-- Karta Profily spojuje pojmenované lokální profily a ruční cloudový přenos.
-- Nový profil se ihned aktivuje; úpravy a přepnutí se ukládají bez ztráty ostatních profilů.
-- Upload vybraného profilu, download jako nová kopie a smazání cloudové kopie.
-- Cloud přenáší ping cíle, upozornění a uložené IP/DNS předvolby; zachovává místní síťovou kartu a pozici okna.
-- Souběžné cloudové operace jsou blokovány; stažená data se zapisují v hlavním vlákně.
-- Přepnutí profilu neaplikuje IP/DNS do OS; použijte stávající dialog Nastavení IP.
-- Ruční synchronizace. Automatická synchronizace není součástí této bety.
-
 # Změny
+
+## 1.4.0
+- **Profily** (Soukromý, Firemní, Zákazník…): každý má vlastní ping cíle (IP adresy, domény, sekce), upozornění a uložené IP/DNS předvolby. Přepnutí jedním kliknutím – pravé tlačítko na widgetu nebo na ikoně v liště → Profil. Stávající nastavení se převede do profilu „Soukromý“.
+- **Účet a automatická synchronizace** (volitelné, vlastní server): po přihlášení se profily samy nahrávají a stahují na další počítače. Když se stejný profil změní na dvou místech, aplikace se zeptá, kterou verzi zachovat. Bez přihlášení funguje vše lokálně jako dosud.
+- **Registrace licenčním klíčem**: nový účet lze založit jen s klíčem od správce serveru.
+- **Karta Správa** (jen správce): licenční klíče s poznámkou, počtem použití a platností, tlačítko Kopírovat pozvánku, přehled a blokování účtů. Správce se přihlašuje heslem a kódem z autentikátoru (nastavení QR kódem).
+- **IP/DNS předvolba profilu**: po přepnutí profilu aplikace nabídne použití přiřazené předvolby; změnu vždy potvrzuje uživatel.
+- **Profil podle sítě**: profil lze spojit se sítí (Wi-Fi podle názvu, kabel podle brány); po připojení aplikace nabídne přepnutí.
+- Přihlášení vydrží restart; na počítači se ukládá jen přihlašovací token (Windows: šifrováno), heslo nikdy.
+- Volba „Přijímat beta aktualizace“ v Nastavení → Obecné.
+- Synchronizační server je ve složce `sync-server` (Docker), viz `sync-server/README.md`.
 
 ## 1.3.4
 - Linux: když XWayland (Qt xcb) nejde načíst – typicky chybí libxcb-cursor0 –, aplikace na Waylandu místo pádu nastartuje nativně a v Nastavení i v logu řekne, co doinstalovat (#1)
