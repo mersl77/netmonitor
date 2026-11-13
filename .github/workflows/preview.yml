@@ -34,7 +34,7 @@ jobs:
             if [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" != "true" ]; then
               echo "Refusing to overwrite a published beta"; exit 1
             fi
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" --draft --prerelease \

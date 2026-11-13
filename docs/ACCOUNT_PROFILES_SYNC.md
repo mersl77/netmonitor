@@ -1,6 +1,6 @@
 # NetMonitor 1.4 — účty, více profilů a synchronizace
 
-> Pracovní dokumentace větve `feature/account-profiles-sync` (13. 11. 2026). Funkce **není hotová ani nasazená**. Stabilní v1.3.4 zůstává beze změn.
+> Pracovní dokumentace větve `feature/account-profiles-sync` (13. 11. 2026). Beta 1.4.0b4 implementuje lokální profily a ruční cloudový přenos. Automatická synchronizace zůstává nedokončená. Stabilní v1.3.4 zůstává beze změn.
 
 ## Požadované chování
 
@@ -10,7 +10,7 @@
 - Přihlášení z nového počítače stáhne dostupné profily. Lokální monitorování zůstává funkční offline.
 - Změny se lokálně ukládají okamžitě; synchronizace přenáší změny na vyžádání / při dostupném spojení, konflikty verzí se nesmí tiše přepisovat.
 - Stávající uživatelé bez účtu nadále používají lokální konfiguraci.
-- Nesynchronizovat identifikaci síťové karty, IP profily síťového adaptéru, polohu okna a lokální historii SQLite; uložené interní IP adresy považovat za citlivé.
+- Nesynchronizovat identifikaci síťové karty, polohu okna a lokální historii SQLite; uložené interní IP adresy považovat za citlivé.
 
 ## Ověřený desktopový projekt
 
@@ -47,6 +47,30 @@
 - [x] Ověření architektury klienta a připraveného backendu
 - [x] Samostatná vývojová větev
 - [x] Tato dokumentace
-- [ ] Implementace API a klienta
-- [ ] Automatizované testy
+- [x] Desktopová správa profilů a klient existujícího profilového API
+- [x] Automatizované testy lokální správy, GUI a cloudového klienta
 - [ ] Bezpečné nasazení a test přihlášení na druhém PC
+
+## Použití bety 1.4.0b4
+
+1. Nastavení → Profily → Nový profil. Zadejte např. Domácí nebo Pracovní.
+   Profil se vytvoří z aktuální konfigurace a ihned se aktivuje.
+2. Ping cíle, intervaly a další nastavení upravujte v dosavadních kartách.
+   Uložené IP/DNS předvolby patří do profilu; přepnutí neaplikuje změny IP do OS.
+3. Vyberte jiný profil a klikněte na Aktivovat / upravit. Aktuální konfigurace
+   se uloží před přepnutím. Aktivní profil nelze smazat, dokud neaktivujete jiný.
+4. Přihlaste se na kartě Účet a synchronizace. Na kartě Profily vyberte lokální
+   profil a klikněte na Nahrát vybraný lokální profil na server. Opakovaný upload
+   aktualizuje spárovaný profil pomocí revize; konflikt 409 nic nepřepíše.
+5. Stáhnout vybraný jako nový vytvoří samostatnou kopii a při shodě názvu přidá
+   číselnou příponu. Smazat z cloudu ponechá všechny lokální kopie.
+
+Cloud přenáší ping cíle, upozornění a uložené IP/DNS předvolby. Identita adaptéru,
+pozice okna, přihlašovací údaje a historie se nepřenášejí. Starší cloudové profily
+bez IP/DNS předvoleb zůstávají kompatibilní.
+
+Existující API neumí přejmenování vzdáleného záznamu. Po lokálním přejmenování
+vytvoří příští upload novou cloudovou kopii pod novým názvem; původní kopii lze
+smazat samostatně. Serverová konfigurace ani databáze se v rámci b4 nemění.
+Ověřeno GET /profiles bez tokenu → 401; přihlášený přenos na produkci a mezi dvěma
+počítači v této relaci nebyl ověřen. Token zůstává pouze v paměti.

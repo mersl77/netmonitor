@@ -51,6 +51,11 @@ a = Analysis(
 _DROP = ("Qt6Quick", "Qt6Qml", "Qt6Pdf", "Qt6VirtualKeyboard", "qtvirtualkeyboardplugin", "qpdf",
          "Qt6QuickControls", "Qt6QuickTemplates")
 a.binaries = [b for b in a.binaries if not any(d in Path(b[0]).name for d in _DROP)]
+# Qt on Windows uses the OS ICU API. A same-named third-party ICU from
+# PATH (e.g. Poppler) exports versioned symbols and breaks QtCore at startup.
+if sys.platform == "win32":
+    a.binaries = [b for b in a.binaries
+                  if Path(b[0]).name.lower() not in ("icuuc.dll", "icuin.dll")]
 pyz = PYZ(a.pure)
 
 exe = EXE(

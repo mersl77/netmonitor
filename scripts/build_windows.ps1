@@ -47,6 +47,9 @@ Write-Host "==> PyInstaller" -ForegroundColor Cyan
 & $vpy -m PyInstaller packaging\netmonitor.spec --noconfirm --clean
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller selhal" }
 
+& $vpy scripts\smoke_frozen.py dist\NetMonitor\NetMonitor.exe
+if ($LASTEXITCODE -ne 0) { throw "Spuštění sestavené aplikace selhalo" }
+
 $zip = "dist\NetMonitor-1.4.0b4-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path dist\NetMonitor\* -DestinationPath $zip
