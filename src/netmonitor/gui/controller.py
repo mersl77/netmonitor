@@ -39,6 +39,9 @@ class Controller(QObject):
     config_changed = Signal(object)             # AppConfig
     notification = Signal(object)               # Notification
     profiles_changed = Signal()                 # seznam profilů nebo aktivní profil
+    ip_preset_offered = Signal(str)             # po přepnutí profilu: název IP/DNS předvolby k použití
+    network_identified = Signal()               # změnila se rozpoznaná síť (net_identity)
+    profile_suggested = Signal(str, str, str)   # id profilu, název, popis sítě
     _deliver = Signal(object, object)
 
     def __init__(self, cfg: AppConfig, config_path=None, history_path=None, parent=None):
@@ -47,6 +50,10 @@ class Controller(QObject):
         self.config_path = config_path
         self.profile_store = None  # aktivuje hlavní aplikace; screenshot/test režim bez profilů
         self.sync = None           # SyncService; vytváří hlavní aplikace
+        self.net_identity: tuple[str, str] | None = None   # (klíč, popis) aktuální sítě
+        self._identity_sig = None
+        self._identity_key = None
+        self._identity_try = (None, 0)
         self._bg = ThreadPoolExecutor(max_workers=3, thread_name_prefix="bg")
         self._deliver.connect(self._on_deliver)
         self._busy: set[str] = set()
@@ -186,6 +193,8 @@ class Controller(QObject):
         cfg = store.activate(profile_id)
         self.apply_profile_config(cfg)
         self.profiles_changed.emit()
+        if self.cfg.network.switch_ip_profile:
+            self.ip_preset_offered.emit(self.cfg.network.switch_ip_profile)
 
     def apply_profile_config(self, cfg: AppConfig) -> None:
         """Použije obsah profilu, ale ponechá věci patřící tomuto počítači (poloha a velikost okna)."""
@@ -298,6 +307,48 @@ class Controller(QObject):
                 self._apply_targets()
         self.network_updated.emit(snap)
         self._eval_timer.start()
+        self._identify_network(snap)
+
+    def _identify_network(self, snap: NetworkSnapshot) -> None:
+        """Určí síť (SSID / brána + MAC) a případně nabídne profil, který k ní patří."""
+        sig = snap.signature()
+        if sig == self._identity_sig:
+            return
+        if sig != self._identity_try[0]:
+            self._identity_try = (sig, 0)
+        if self._identity_try[1] >= 5:       # brána bez záznamu v ARP (VPN apod.) – dál nezkoušet
+            return
+        self._identity_try = (sig, self._identity_try[1] + 1)
+        from ..core.network_identity import identify
+
+        def done(result):
+            if isinstance(result, Exception):
+                return
+            if self.network is None or self.network.signature() != sig:
+                return                       # síť se mezitím změnila
+            if result is not None:
+                self._identity_sig = sig     # None = zkusit znovu při dalším obnovení (ARP ještě nezná bránu)
+            if result != self.net_identity:
+                self.net_identity = result
+                self.network_identified.emit()
+            key = result[0] if result else None
+            if key and key != self._identity_key:
+                self._suggest_profile(key, result[1])
+            if key:                          # krátký výpadek téže sítě nevyvolá dotaz znovu
+                self._identity_key = key
+
+        self._run_bg("net-identity", lambda: identify(snap), done)
+
+    def _suggest_profile(self, key: str, label: str) -> None:
+        store = self.profile_store
+        if store is None:
+            return
+        try:
+            pid = store.profile_for_network(key)
+            if pid and pid != store.active_id():
+                self.profile_suggested.emit(pid, store.record(pid)["name"], label)
+        except (OSError, ValueError, KeyError) as exc:
+            log.warning("Profil pro síť nelze určit: %s", exc)
 
     def refresh_wan(self, force_isp: bool = False) -> None:
         n = self.cfg.network

@@ -1,3 +1,12 @@
+## 1.4.0b6 (beta)
+
+- **QR kód pro dvoufázové ověření**: na kartě Správa stačí kód naskenovat autentikátorem; ruční zadání klíče zůstává.
+- **Kopírovat pozvánku**: u nově vytvořeného licenčního klíče zkopíruje hotovou zprávu s odkazem ke stažení, postupem registrace a klíčem.
+- **IP/DNS předvolba profilu**: profilu lze přiřadit uloženou předvolbu (Nastavení → Profily → Automatika). Po přepnutí se aplikace zeptá a otevře dialog Nastavit IP adresu s načtenými hodnotami; sama nic nemění.
+- **Profil podle sítě**: profil lze spojit s aktuální sítí (Wi-Fi podle názvu, kabel podle IP a MAC adresy brány). Po připojení k ní aplikace nabídne přepnutí. Spojení platí jen pro daný počítač.
+- Synchronizace: stejná změna provedená na dvou počítačích už nevyvolá dotaz na konflikt.
+- Server se nemění (zůstává 1.0.0).
+
 ## 1.4.0b5 (beta)
 
 - **Přepínání profilů** (Soukromý, Firemní, Zákazník…) jedním kliknutím: pravé tlačítko na widgetu nebo na ikoně v liště → Profil. Každý profil má vlastní ping cíle (IP adresy, domény, sekce), upozornění a uložené IP/DNS předvolby. Poloha a velikost okna zůstávají podle počítače.

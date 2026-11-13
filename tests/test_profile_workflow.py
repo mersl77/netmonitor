@@ -116,14 +116,14 @@ def test_login_uploads_and_changes_sync_automatically(env, server):
     assert sync.logged_in and "user@example.org" in tab.status.text()
     assert not tab.btn_login.isEnabled() and tab.btn_logout.isEnabled()
     assert list(server.profiles()) == ["Soukromý"]
-    assert d.profiles_tab.table.item(0, 1).text() == "synchronizováno"
+    assert d.profiles_tab.table.item(0, 2).text() == "synchronizováno"
     assert d.tabs.indexOf(d.admin_tab) == -1              # běžný uživatel správu nevidí
 
     cfg = ctrl.cfg.copy()
     cfg.ping.targets = [PingTarget("Nový", "10.5.5.5")]
     ctrl.update_config(cfg)
     assert sync._debounce.isActive()                      # změna naplánuje nahrání
-    assert d.profiles_tab.table.item(0, 1).text() == "čeká na nahrání"
+    assert d.profiles_tab.table.item(0, 2).text() == "čeká na nahrání"
     sync._debounce.stop()
     sync.sync_now()
     assert server.profiles()["Soukromý"].config["ping"]["targets"][0]["host"] == "10.5.5.5"
@@ -228,7 +228,7 @@ def test_register_with_license_key_and_admin_tab(env, server, monkeypatch):
     assert ctrl.sync.logged_in and ctrl.sync.client.email == "jana@example.org"
     # Profil na tomto počítači patří účtu správce – do cizího účtu se sám nenahraje.
     assert server.profiles("jana@example.org") == {}
-    assert d.profiles_tab.table.item(0, 1).text() == "patří k jinému účtu"
+    assert d.profiles_tab.table.item(0, 2).text() == "patří k jinému účtu"
     assert not d.profiles_tab.btn_reupload.isHidden()
     d.profiles_tab._reupload()                             # výslovné „Nahrát do tohoto účtu“
     ctrl.sync._debounce.stop()

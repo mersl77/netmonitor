@@ -1,6 +1,6 @@
 # NetMonitor 1.4 – profily, účet a synchronizace
 
-> Stav k betě 1.4.0b5 (13. 11. 2026), větev `feature/account-profiles-sync`. Stabilní vydání je v1.3.4.
+> Stav k betě 1.4.0b6 (13. 11. 2026), větev `feature/account-profiles-sync`. Stabilní vydání je v1.3.4.
 
 ## Profily
 
@@ -11,6 +11,15 @@
 - Přepnutí nemění IP adresu počítače; uloženou IP/DNS předvolbu použijete v dialogu Nastavit IP adresu.
 - Poloha a velikost okna a vybraná síťová karta patří počítači, ne profilu.
 - Stávající konfigurace se při prvním spuštění převede do profilu „Soukromý“.
+
+## Automatika (Nastavení → Profily)
+
+- **IP/DNS předvolba aktivního profilu:** po přepnutí na profil se aplikace zeptá, zda předvolbu použít,
+  a otevře dialog Nastavit IP adresu s načtenými hodnotami. Změnu vždy potvrzuje uživatel (a systém dotazem správce).
+  Volba se synchronizuje s profilem.
+- **Spojit vybraný profil s touto sítí:** po připojení k dané síti aplikace nabídne přepnutí na profil.
+  Wi-Fi se pozná podle názvu (SSID), kabelová síť podle IP a MAC adresy brány. Jedna síť patří jednomu profilu.
+  Spojení je uložené jen v tomto počítači. Táž síť se po odmítnutí znovu nenabízí, dokud se síť nezmění.
 
 ## Účet a synchronizace
 
@@ -34,7 +43,8 @@ Přihlášení přežije restart: ukládá se jen obnovovací token (Windows: DP
 ## Správce
 
 - Účet správce vzniká na serveru příkazem `python -m app.cli create-admin` (viz `sync-server/README.md`).
-- Po prvním přihlášení karta **Správa** vyžádá zapnutí dvoufázového ověření (TOTP autentikátor).
+- Po prvním přihlášení karta **Správa** vyžádá zapnutí dvoufázového ověření (TOTP autentikátor, QR kód).
+- **Kopírovat pozvánku** u nového klíče zkopíruje zprávu pro uživatele (odkaz ke stažení, postup, klíč).
 - Licenční klíč: poznámka pro koho je, počet účtů (výchozí 1), volitelná platnost ve dnech.
   Celý klíč se zobrazí jen při vytvoření.
 - Přehled účtů ukazuje, kterým klíčem se kdo registroval; účet lze zablokovat (odhlásí všechna zařízení).
@@ -48,6 +58,9 @@ Přihlášení přežije restart: ukládá se jen obnovovací token (Windows: DP
 | HTTP klient | `src/netmonitor/core/sync_client.py` |
 | Logika synchronizace a konfliktů | `src/netmonitor/core/sync_engine.py` |
 | Uložení tokenu | `src/netmonitor/core/secret_store.py` |
+| Rozpoznání sítě | `src/netmonitor/core/network_identity.py` |
+| QR kód | `src/netmonitor/core/qr.py` (knihovna segno) |
+| Dotazy při přepnutí / podle sítě | `src/netmonitor/gui/profile_prompts.py` |
 | Propojení s GUI, časování | `src/netmonitor/gui/sync_service.py` |
 | Karty Profily / Účet / Správa | `src/netmonitor/gui/account_tabs.py` |
 | Server | `sync-server/` |
@@ -56,6 +69,7 @@ Přihlášení přežije restart: ukládá se jen obnovovací token (Windows: DP
 
 - [x] Automatické testy: klient proti skutečnému kódu serveru (dva počítače, konflikty, klíče, 2FA), GUI offscreen.
 - [x] Klient ↔ server přes skutečné HTTP na localhostu (Linux).
-- [ ] Nasazení serveru na `sync.zelina.eu` (Portainer, NPM, certifikát).
+- [x] Server nasazen na `sync.zelina.eu` (13. 11. 2026, Docker Compose v `/opt/netmonitor-sync-v2`), přihlášení správce a 2FA z Windows ověřil uživatel.
+- [ ] Novinky bety 6 (QR, pozvánka, IP předvolba, profil podle sítě) na skutečném počítači.
 - [ ] Dva skutečné počítače (Windows + Linux) proti produkčnímu serveru.
 - [ ] Šifrování tokenu DPAPI na Windows ověřuje jen test v CI.

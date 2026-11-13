@@ -28,7 +28,7 @@ check_qt_xcb_libraries() {
 }
 
 cd "$(dirname "$0")/.."
-VER=1.4.0b5
+VER=1.4.0b6
 SKIP_TESTS=0; DEB=0; APPIMAGE=0
 for a in "$@"; do
   case "$a" in --skip-tests) SKIP_TESTS=1;; --deb) DEB=1;; --appimage) APPIMAGE=1;; esac

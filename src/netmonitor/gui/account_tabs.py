@@ -4,13 +4,16 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QGuiApplication
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPixmap
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
                                QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
+from .. import __version__
 from ..core import sync_engine
 from ..core.sync_client import SyncError
+
+DOWNLOAD_URL = f"https://github.com/mersl77/netmonitor/releases/tag/v{__version__}"
 
 KEY_STATES = {"active": "platný", "used": "využitý", "expired": "vypršel", "revoked": "zneplatněn"}
 
@@ -69,6 +72,42 @@ def when(iso: str | None) -> str:
         return iso
 
 
+def qr_pixmap(text: str, size: int = 232) -> QPixmap:
+    """QR kód černě na bílém s okrajem 4 moduly (nutné pro spolehlivé načtení telefonem)."""
+    from ..core.qr import matrix
+    modules = matrix(text)
+    count = len(modules) + 8
+    scale = max(2, size // count)
+    image = QImage(count * scale, count * scale, QImage.Format.Format_RGB32)
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+    black = QColor("black")
+    for y, row in enumerate(modules):
+        for x, dark in enumerate(row):
+            if dark:
+                painter.fillRect((x + 4) * scale, (y + 4) * scale, scale, scale, black)
+    painter.end()
+    return QPixmap.fromImage(image)
+
+
+def invitation(key: dict, server: str) -> str:
+    """Text pro kamaráda: odkaz ke stažení, postup registrace a klíč."""
+    uses = int(key.get("max_uses", 1))
+    limits = "pro jeden účet" if uses == 1 else f"pro {uses} účtů"
+    if key.get("expires_at"):
+        limits += f" a je potřeba ho použít do {when(key['expires_at'])}"
+    return (
+        "Ahoj, posílám přístup do NetMonitoru (sledování sítě a ping cílů se synchronizací profilů).\n\n"
+        f"1. Stáhni a nainstaluj: {DOWNLOAD_URL}\n"
+        "2. Pravé tlačítko na widgetu → Nastavení → karta Účet a synchronizace.\n"
+        f"3. Server: {server}\n"
+        "4. Vyplň svůj e-mail a nové heslo (alespoň 10 znaků).\n"
+        f"5. Licenční klíč: {key.get('key', '')}\n"
+        "6. Klikni na „Registrovat nový účet“.\n\n"
+        f"Klíč platí {limits}."
+    )
+
+
 def ask_conflicts(sync, conflicts, parent=None) -> None:
     """Zeptá se na každý konflikt; nic se nepřepíše bez rozhodnutí uživatele."""
     decided = False
@@ -107,8 +146,8 @@ class ProfilesTab(QWidget):
             "Profil je samostatná sada ping cílů (IP adresy, domény, sekce), upozornění a uložených IP/DNS "
             "předvoleb – například Soukromý, Firemní nebo Zákazník. Přepnout jde tady i pravým tlačítkem "
             "na widgetu nebo ikoně v liště (Profil). Úpravy v ostatních kartách se ukládají do aktivního profilu. "
-            "Přepnutí samo nemění IP adresu počítače."))
-        self.table = table(["Profil", "Stav"])
+            "Přepnutí samo nemění IP adresu počítače; může ale nabídnout uloženou předvolbu (Automatika)."))
+        self.table = table(["Profil", "Síť", "Stav"])
         self.table.itemDoubleClicked.connect(lambda _i: self._activate())
         layout.addWidget(self.table, 1)
         row = QHBoxLayout()
@@ -130,9 +169,31 @@ class ProfilesTab(QWidget):
         for button in (self.btn_sync, self.btn_conflicts, self.btn_reupload):
             row2.addWidget(button)
         layout.addLayout(row2)
+        box = QGroupBox("Automatika")
+        form = QFormLayout(box)
+        self.ip_preset = QComboBox()
+        self.ip_preset.setToolTip("Po přepnutí na aktivní profil se aplikace zeptá, zda tuto IP/DNS předvolbu použít. "
+                                  "Předvolby se ukládají v dialogu Nastavit IP adresu.")
+        self.ip_preset.activated.connect(self._set_ip_preset)
+        form.addRow("IP/DNS předvolba aktivního profilu", self.ip_preset)
+        net_row = QHBoxLayout()
+        self.btn_bind = QPushButton("Spojit vybraný profil s touto sítí")
+        self.btn_bind.setToolTip("Po připojení k této síti aplikace nabídne přepnutí na vybraný profil. "
+                                 "Platí jen pro tento počítač.")
+        self.btn_bind.clicked.connect(self._bind_network)
+        self.btn_unbind = QPushButton("Zrušit spojení se sítí")
+        self.btn_unbind.clicked.connect(self._unbind_network)
+        net_row.addWidget(self.btn_bind)
+        net_row.addWidget(self.btn_unbind)
+        self.net_label = hint("")
+        form.addRow("Aktuální síť", self.net_label)
+        form.addRow("", net_row)
+        layout.addWidget(box)
         self.status = hint("")
         layout.addWidget(self.status)
         ctrl.profiles_changed.connect(self.refresh)
+        ctrl.network_identified.connect(self._buttons)
+        ctrl.config_changed.connect(lambda _c: self._fill_ip_presets())
         if ctrl.sync is not None:
             ctrl.sync.changed.connect(self.refresh)
         self.table.currentCellChanged.connect(lambda *_: self._buttons())
@@ -153,7 +214,8 @@ class ProfilesTab(QWidget):
         rows = []
         for rec in records:
             state = sync.profile_state(rec) if sync is not None else "jen v tomto počítači"
-            rows.append((rec["id"], [rec["name"] + ("   ● aktivní" if rec["id"] == active else ""), state]))
+            nets = ", ".join(n.get("label", "") for n in rec.get("networks", [])) or "—"
+            rows.append((rec["id"], [rec["name"] + ("   ● aktivní" if rec["id"] == active else ""), nets, state]))
         fill(self.table, rows)
         bold = QFont(self.table.font())
         bold.setBold(True)
@@ -163,10 +225,51 @@ class ProfilesTab(QWidget):
             if rec["id"] == select:
                 self.table.setCurrentCell(r, 0)
         self.status.setText(sync.status if sync is not None else "")
+        self._fill_ip_presets()
         self._buttons()
+
+    def _fill_ip_presets(self) -> None:
+        net = self.ctrl.cfg.network
+        self.ip_preset.blockSignals(True)
+        self.ip_preset.clear()
+        self.ip_preset.addItem("žádná – na nic se neptat", "")
+        for p in net.ip_profiles:
+            self.ip_preset.addItem(p["name"], p["name"])
+        self.ip_preset.setCurrentIndex(max(0, self.ip_preset.findData(net.switch_ip_profile)))
+        self.ip_preset.blockSignals(False)
+
+    def _set_ip_preset(self, _index: int) -> None:
+        cfg = self.ctrl.cfg.copy()
+        cfg.network.switch_ip_profile = self.ip_preset.currentData() or ""
+        self.ctrl.update_config(cfg)
+
+    def _bind_network(self) -> None:
+        store, pid, identity = self.ctrl.profile_store, selected(self.table), self.ctrl.net_identity
+        if not pid or identity is None:
+            return
+        try:
+            store.bind_network(pid, identity[0], identity[1])
+        except (OSError, ValueError) as exc:
+            self._warn(exc)
+            return
+        self.refresh(pid)
+
+    def _unbind_network(self) -> None:
+        store, pid = self.ctrl.profile_store, selected(self.table)
+        if not pid:
+            return
+        try:
+            store.unbind_networks(pid)
+        except (OSError, ValueError) as exc:
+            self._warn(exc)
+            return
+        self.refresh(pid)
 
     def _buttons(self) -> None:
         sync, store = self.ctrl.sync, self.ctrl.profile_store
+        identity = self.ctrl.net_identity
+        self.net_label.setText(identity[1] if identity else "nerozpoznána (bez připojení, nebo brána neodpovídá)")
+        self.btn_bind.setEnabled(identity is not None and selected(self.table) is not None)
         online = sync is not None and sync.logged_in
         self.btn_sync.setEnabled(online)
         self.btn_conflicts.setVisible(online and bool(sync.pending_conflicts))
@@ -425,10 +528,14 @@ class AdminTab(QWidget):
         tl = QVBoxLayout(self.totp_box)
         tl.addWidget(hint("Účet správce vydává licenční klíče, proto vyžaduje druhý faktor. V telefonu otevřete "
                           "autentikátor (Aegis, Google Authenticator, Microsoft Authenticator, Bitwarden…), "
-                          "přidejte účet ručním zadáním klíče níže a potvrďte šestimístným kódem."))
-        self.btn_totp = QPushButton("Vygenerovat klíč pro autentikátor")
+                          "naskenujte QR kód (nebo zadejte klíč ručně) a potvrďte šestimístným kódem."))
+        self.btn_totp = QPushButton("Zobrazit QR kód pro autentikátor")
         self.btn_totp.clicked.connect(self._totp_setup)
         tl.addWidget(self.btn_totp)
+        self.totp_qr = QLabel()
+        self.totp_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.totp_qr.hide()
+        tl.addWidget(self.totp_qr)
         self.totp_secret = QLineEdit()
         self.totp_secret.setReadOnly(True)
         self.totp_secret.setPlaceholderText("klíč se zobrazí po vygenerování")
@@ -478,8 +585,14 @@ class AdminTab(QWidget):
         self.new_key.setPlaceholderText("Nový klíč se zobrazí zde – jen jednou, server ukládá pouze jeho otisk.")
         copy = QPushButton("Kopírovat")
         copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.new_key.text()))
+        self.btn_invite = QPushButton("Kopírovat pozvánku")
+        self.btn_invite.setToolTip("Zkopíruje hotovou zprávu pro kamaráda: odkaz ke stažení, postup registrace a klíč.")
+        self.btn_invite.setEnabled(False)
+        self.btn_invite.clicked.connect(self._copy_invitation)
+        self._invitation = ""
         shown.addWidget(self.new_key, 1)
         shown.addWidget(copy)
+        shown.addWidget(self.btn_invite)
         kl.addLayout(shown)
         self.keys = table(["Poznámka", "Klíč", "Stav", "Použito", "Vytvořen", "Platí do", "Účty"])
         kl.addWidget(self.keys, 1)
@@ -554,7 +667,14 @@ class AdminTab(QWidget):
             secret = str(result.get("secret", ""))
             self._totp_uri = str(result.get("uri", ""))
             self.totp_secret.setText(" ".join(secret[i:i + 4] for i in range(0, len(secret), 4)))
-            self.status.setText("Klíč zadejte do autentikátoru (typ: časový/TOTP) a potvrďte kódem.")
+            try:
+                self.totp_qr.setPixmap(qr_pixmap(self._totp_uri))
+                self.totp_qr.show()
+            except Exception as exc:  # noqa: BLE001 – bez QR kódu zůstává ruční zadání klíče
+                self.totp_qr.hide()
+                self.status.setText(f"QR kód nelze vykreslit ({exc}); zadejte klíč ručně.")
+                return
+            self.status.setText("Naskenujte QR kód autentikátorem a potvrďte šestimístným kódem.")
             self.totp_code.setFocus()
         self.sync.run("totp-setup", client.totp_setup, done)
 
@@ -568,6 +688,8 @@ class AdminTab(QWidget):
                 return
             self.totp_code.clear()
             self.totp_secret.clear()
+            self.totp_qr.clear()
+            self.totp_qr.hide()
             self._totp_uri = ""
             self.sync.changed.emit()
             self.refresh()
@@ -587,9 +709,15 @@ class AdminTab(QWidget):
                 return
             self.new_key.setText(str(result.get("key", "")))
             self.new_key.selectAll()
+            self._invitation = invitation(result, client.base_url)
+            self.btn_invite.setEnabled(True)
             self.note.clear()
             self.refresh()
         self.sync.run("key-create", lambda: client.admin_create_key(note, uses, days), done)
+
+    def _copy_invitation(self) -> None:
+        QGuiApplication.clipboard().setText(self._invitation)
+        self.status.setText("Pozvánka je ve schránce – vložte ji do zprávy nebo e-mailu.")
 
     def _revoke_key(self) -> None:
         key = selected(self.keys)

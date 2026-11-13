@@ -11,7 +11,8 @@ _SHARED = ("ping", "notifications")
 def export_shared(cfg: AppConfig) -> dict:
     data = cfg.normalized().to_dict()
     result = {key: data[key] for key in _SHARED}
-    result["network"] = {"ip_profiles": data["network"]["ip_profiles"]}
+    result["network"] = {"ip_profiles": data["network"]["ip_profiles"],
+                         "switch_ip_profile": data["network"]["switch_ip_profile"]}
     return result
 
 
@@ -31,4 +32,6 @@ def merge_shared(remote: dict, local: AppConfig) -> AppConfig:
         if not isinstance(network["ip_profiles"], list):
             raise ValueError("Neplatný seznam IP/DNS nastavení")
         result["network"]["ip_profiles"] = network["ip_profiles"]
+    if isinstance(network.get("switch_ip_profile"), str):
+        result["network"]["switch_ip_profile"] = network["switch_ip_profile"]
     return AppConfig.from_dict(result)

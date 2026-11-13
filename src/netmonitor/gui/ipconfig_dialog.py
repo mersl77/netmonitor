@@ -138,10 +138,18 @@ class IpConfigDialog(QDialog):
             self._fill_adapters(name)
 
     # ------------------------------------------------------------------ naplnění
-    def open_for(self, iface: str | None = None) -> None:
+    def open_for(self, iface: str | None = None, preset: str | None = None) -> None:
+        """preset: název uložené IP/DNS předvolby, která se rovnou načte do formuláře (nic se nepoužije samo)."""
         self._fill_adapters(iface)
         self._fill_profiles()
         self.msg.clear()
+        if preset:
+            i = self.profiles.findText(preset)
+            if i >= 0:
+                self.profiles.setCurrentIndex(i)
+                self._load_profile()
+                from html import escape
+                self.msg.setText(f"Načtena předvolba „{escape(preset)}“. Zkontrolujte síťovou kartu a potvrďte tlačítkem Použít.")
         self.show()
         self.raise_()
         self.activateWindow()

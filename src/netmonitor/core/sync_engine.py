@@ -100,9 +100,12 @@ def run(client: SyncClient, snap: Snapshot, resolutions: dict[str, str] | None =
                 return Action("gone", lp.id, name=lp.name)
             if summary.get("revision") == lp.remote_revision:
                 return upload(lp, lp.remote_id, lp.remote_revision) if lp.dirty else Action("noop", lp.id)
+            full = client.download(lp.remote_id)
             if not lp.dirty:
-                return Action("downloaded", lp.id, client.download(lp.remote_id), hash=lp.hash)
-            return resolve(lp, summary, None)
+                return Action("downloaded", lp.id, full, hash=lp.hash)
+            if same_content(lp, full):       # obě strany došly ke stejnému obsahu – není co řešit
+                return Action("bound", lp.id, full, full["revision"], lp.hash)
+            return resolve(lp, summary, full)
         summary = by_name.pop(lp.name.casefold(), None)
         if summary is None:
             created = client.create(lp.name, export_shared(lp.cfg))
@@ -110,10 +113,13 @@ def run(client: SyncClient, snap: Snapshot, resolutions: dict[str, str] | None =
         # Stejně pojmenovaný profil už na serveru je (typicky první přihlášení na dalším počítači).
         claimed.add(str(summary["id"]))
         full = client.download(str(summary["id"]))
-        same = profile_hash(str(full.get("name", "")), export_shared(merge_shared(full["config"], lp.cfg)))
-        if same == lp.hash:
+        if same_content(lp, full):
             return Action("bound", lp.id, full, full["revision"], lp.hash)
         return resolve(lp, summary, full)
+
+    def same_content(lp: LocalProfile, full: dict) -> bool:
+        merged = export_shared(merge_shared(full["config"], lp.cfg))
+        return profile_hash(str(full.get("name", "")), merged) == lp.hash
 
     def upload(lp: LocalProfile, remote_id: str, revision: int) -> Action:
         result = client.upload(remote_id, export_shared(lp.cfg), revision, lp.name)

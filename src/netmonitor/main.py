@@ -191,12 +191,16 @@ def main(argv=None) -> int:
         d.raise_()
         d.activateWindow()
 
-    def ipconfig(iface: str = ""):
+    def ipconfig(iface: str = "", preset: str = ""):
         from .gui.ipconfig_dialog import IpConfigDialog
         d = dialogs.get("ipconfig")
         if d is None:
             d = dialogs["ipconfig"] = IpConfigDialog(ctrl)
-        d.open_for(iface or None)
+        d.open_for(iface or None, preset or None)
+
+    from .gui import profile_prompts
+    ctrl.ip_preset_offered.connect(lambda preset: profile_prompts.offer_ip_preset(ctrl, preset, ipconfig))
+    ctrl.profile_suggested.connect(lambda pid, name, net: profile_prompts.suggest_profile(ctrl, pid, name, net))
 
     from .gui.updater_ui import AboutDialog, UpdateDialog, UpdateManager
     updates = UpdateManager(ctrl)

@@ -193,7 +193,7 @@ def test_device_settings_stay_local(server, tmp_path):
     a.store.save(a.id("Soukromý"), c)
     a.sync()
     stored = server.profiles()["Soukromý"].config
-    assert set(stored) == {"ping", "notifications", "network"} and set(stored["network"]) == {"ip_profiles"}
+    assert set(stored) == {"ping", "notifications", "network"} and set(stored["network"]) == {"ip_profiles", "switch_ip_profile"}
     b = PC(tmp_path, "b")
     b.sync(**{"Soukromý": eng.KEEP_REMOTE})
     got = b.store.load(b.id("Soukromý"))
@@ -264,3 +264,33 @@ def test_expired_access_token_is_refreshed_transparently(server):
 
     client.logout()
     assert not client.logged_in and saved[-1] is None
+
+
+def test_identical_change_on_both_computers_is_not_a_conflict(server, tmp_path):
+    """Např. po aktualizaci aplikace, která přidá do profilu nové pole se stejnou výchozí hodnotou."""
+    server.add_user()
+    a, b = PC(tmp_path, "a"), PC(tmp_path, "b")
+    a.sync(), b.sync()
+    a.edit("Soukromý", "5.5.5.5"), b.edit("Soukromý", "5.5.5.5")
+    assert a.sync().uploaded == 1
+    out = b.sync()
+    assert not out.conflicts and not out.errors and b.sync().uploaded == 0
+    assert server.profiles()["Soukromý"].revision == 2
+
+
+def test_ip_preset_choice_travels_with_profile_and_old_server_data_still_loads(server, tmp_path):
+    server.add_user()
+    a = PC(tmp_path, "a")
+    c = a.store.load(a.id("Soukromý"))
+    c.network.ip_profiles = [{"name": "Kancelář", "dhcp": False, "ip": "10.20.30.2", "mask": "24",
+                              "gateway": "10.20.30.1", "dns_dhcp": True, "dns": []}]
+    c.network.switch_ip_profile = "Kancelář"
+    a.store.save(a.id("Soukromý"), c.normalized())
+    a.sync()
+    b = PC(tmp_path, "b")
+    b.sync(**{"Soukromý": eng.KEEP_REMOTE})
+    assert b.store.load(b.id("Soukromý")).network.switch_ip_profile == "Kancelář"
+    # profil uložený starší verzí (bez nového pole) se načte a místní volba zůstane
+    from netmonitor.core.sync_config import merge_shared
+    merged = merge_shared({"ping": c.to_dict()["ping"], "network": {"ip_profiles": c.network.ip_profiles}}, c)
+    assert merged.network.switch_ip_profile == "Kancelář"

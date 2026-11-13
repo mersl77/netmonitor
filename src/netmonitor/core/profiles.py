@@ -173,6 +173,37 @@ class ProfileStore:
                 return
         raise ValueError("Neznámý profil")
 
+    # -- spojení profilu se sítí (jen pro tento počítač, nesynchronizuje se) --
+    def bind_network(self, profile_id: str, key: str, label: str) -> None:
+        """Jedna síť patří nejvýš jednomu profilu."""
+        if not key:
+            raise ValueError("Síť se nepodařilo rozpoznat")
+        index = self._read()
+        if profile_id not in {p["id"] for p in index["profiles"]}:
+            raise ValueError("Neznámý profil")
+        for item in index["profiles"]:
+            nets = [n for n in item.get("networks", []) if n.get("key") != key]
+            if item["id"] == profile_id:
+                nets.append({"key": key, "label": label[:80]})
+            if nets:
+                item["networks"] = nets
+            else:
+                item.pop("networks", None)
+        atomic_write_json(self.index_path, index)
+
+    def unbind_networks(self, profile_id: str) -> None:
+        index = self._read()
+        for item in index["profiles"]:
+            if item["id"] == profile_id:
+                item.pop("networks", None)
+        atomic_write_json(self.index_path, index)
+
+    def profile_for_network(self, key: str) -> str | None:
+        for item in self._read()["profiles"]:
+            if any(n.get("key") == key for n in item.get("networks", [])):
+                return item["id"]
+        return None
+
     def unique_name(self, name: str, skip_id: str | None = None) -> str:
         taken = {p["name"].casefold() for p in self.list_profiles() if p["id"] != skip_id}
         name = name.strip()[:100] or "Profil"

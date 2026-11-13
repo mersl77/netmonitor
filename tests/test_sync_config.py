@@ -14,7 +14,7 @@ def test_sync_transfers_ip_presets_but_excludes_device_and_window_details():
     outgoing = export_shared(cfg)
     assert set(outgoing) == {"ping", "notifications", "network"}
     assert outgoing["ping"]["targets"][0]["host"] == "10.0.1.20"
-    assert set(outgoing["network"]) == {"ip_profiles"}
+    assert set(outgoing["network"]) == {"ip_profiles", "switch_ip_profile"}
     assert outgoing["network"]["ip_profiles"][0]["name"] == "Office"
     assert "appearance" not in outgoing
 
