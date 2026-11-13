@@ -123,3 +123,8 @@ class SyncClient:
     def _require_login(self) -> None:
         if not self.access_token:
             raise SyncError("Nejprve se přihlaste")
+
+    def delete(self, profile_id: str) -> None:
+        self._require_login()
+        from uuid import UUID
+        self._request("DELETE", "/profiles/" + str(UUID(profile_id)))

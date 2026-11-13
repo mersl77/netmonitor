@@ -1,3 +1,13 @@
+## 1.4.0b4 (beta)
+
+- Karta Profily spojuje pojmenované lokální profily a ruční cloudový přenos.
+- Nový profil se ihned aktivuje; úpravy a přepnutí se ukládají bez ztráty ostatních profilů.
+- Upload vybraného profilu, download jako nová kopie a smazání cloudové kopie.
+- Cloud přenáší ping cíle, upozornění a uložené IP/DNS předvolby; zachovává místní síťovou kartu a pozici okna.
+- Souběžné cloudové operace jsou blokovány; stažená data se zapisují v hlavním vlákně.
+- Přepnutí profilu neaplikuje IP/DNS do OS; použijte stávající dialog Nastavení IP.
+- Ruční synchronizace. Automatická synchronizace není součástí této bety.
+
 # Změny
 
 ## 1.3.4

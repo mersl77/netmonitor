@@ -3,7 +3,7 @@ from netmonitor.core.config import AppConfig, PingTarget
 from netmonitor.core.sync_config import export_shared, merge_shared
 
 
-def test_sync_excludes_network_and_window_details():
+def test_sync_transfers_ip_presets_but_excludes_device_and_window_details():
     cfg = AppConfig.from_dict({})
     cfg.network.adapter_name = "Ethernet 7"
     cfg.network.adapter_auto = False
@@ -12,9 +12,10 @@ def test_sync_excludes_network_and_window_details():
     cfg.appearance.y = 420
     cfg.ping.targets = [PingTarget(name="Server", host="10.0.1.20")]
     outgoing = export_shared(cfg)
-    assert set(outgoing) == {"ping", "notifications"}
+    assert set(outgoing) == {"ping", "notifications", "network"}
     assert outgoing["ping"]["targets"][0]["host"] == "10.0.1.20"
-    assert "network" not in outgoing
+    assert set(outgoing["network"]) == {"ip_profiles"}
+    assert outgoing["network"]["ip_profiles"][0]["name"] == "Office"
     assert "appearance" not in outgoing
 
 
@@ -34,3 +35,15 @@ def test_merge_keeps_current_device():
     assert merged.appearance.x == 50
     assert merged.appearance.y == 90
     assert merged.notifications.enabled is False
+
+
+def test_roundtrip_ip_dns_and_legacy_cloud():
+    cfg = AppConfig.from_dict({})
+    cfg.network.ip_profiles = [{"name": "Pracovní", "dhcp": False,
+        "ip": "192.168.2.10", "mask": "255.255.255.0", "gateway": "192.168.2.1",
+        "dns_dhcp": False, "dns": ["1.1.1.1", "8.8.8.8"]}]
+    remote = export_shared(cfg)
+    restored = merge_shared(remote, AppConfig.from_dict({}))
+    assert restored.network.ip_profiles == cfg.network.ip_profiles
+    del remote["network"]
+    assert merge_shared(remote, cfg).network.ip_profiles == cfg.network.ip_profiles

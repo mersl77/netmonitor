@@ -64,3 +64,14 @@ def test_invalid_profile_id_cannot_escape_store(tmp_path):
     store.initialize(AppConfig.from_dict({}))
     with pytest.raises(ValueError):
         store.load("../config")
+
+def test_rename_keeps_original_cloud_copy_and_next_upload_uses_new_name(tmp_path):
+    from uuid import uuid4
+    store = ProfileStore(tmp_path / 'profiles')
+    store.initialize(AppConfig.from_dict({}))
+    pid = store.active_id()
+    store.bind_remote(pid, str(uuid4()), 1, 'test@example.org', 'https://sync.zelina.eu')
+    store.rename(pid, 'Domácí')
+    assert store.record(pid)['name'] == 'Domácí'
+    assert 'remote_id' not in store.record(pid)
+    assert store.load(pid).ping.targets

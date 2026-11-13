@@ -115,6 +115,12 @@ class ProfileStore:
             raise ValueError("Profil s tímto názvem už existuje")
         for item in index["profiles"]:
             if item["id"] == profile_id:
+                if item["name"] != name:
+                    # Existing API cannot rename: next upload creates the new name,
+                    # while the old cloud copy is retained for explicit deletion.
+                    for key in list(item):
+                        if key.startswith("remote_"):
+                            del item[key]
                 item["name"] = name
                 atomic_write_json(self.index_path, index)
                 return
@@ -136,3 +142,14 @@ class ProfileStore:
         index["profiles"] = [p for p in index["profiles"] if p["id"] != profile_id]
         atomic_write_json(self.index_path, index)
         self._file(profile_id).unlink(missing_ok=True)
+
+    def unbind_remote(self, remote_id: str, account: str, server: str) -> None:
+        index = self._read()
+        for item in index["profiles"]:
+            if (item.get("remote_id") == remote_id
+                    and item.get("remote_account") == account
+                    and item.get("remote_server") == server):
+                for key in list(item):
+                    if key.startswith("remote_"):
+                        del item[key]
+        atomic_write_json(self.index_path, index)

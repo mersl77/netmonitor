@@ -71,3 +71,20 @@ def test_require_auth_and_limit_payload(monkeypatch):
     client.access_token = "token"
     with pytest.raises(SyncError, match="512 KiB"):
         client.create("Test", {"blob": "x" * 600000})
+
+def test_profile_crud_methods_and_payloads(monkeypatch):
+    pid = '11111111-1111-4111-8111-111111111111'
+    calls = []
+    def fake(req, **kwargs):
+        calls.append((req.get_method(), req.full_url, json.loads(req.data) if req.data else None))
+        return Response({'id': pid, 'config': {'ping': {}}, 'revision': 2})
+    monkeypatch.setattr('netmonitor.core.sync_client._open', fake)
+    client = SyncClient(access_token='test-token')
+    client.create('Domácí', {'ping': {}})
+    client.download(pid)
+    client.upload(pid, {'ping': {}}, 1)
+    client.delete(pid)
+    assert [c[0] for c in calls] == ['POST', 'GET', 'PUT', 'DELETE']
+    assert calls[0][2]['name'] == 'Domácí'
+    assert calls[2][2] == {'config': {'ping': {}}, 'revision': 1}
+    assert calls[3][1].endswith('/profiles/' + pid)
