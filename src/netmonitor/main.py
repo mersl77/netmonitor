@@ -156,6 +156,14 @@ def main(argv=None) -> int:
         import tempfile
         hist_path = Path(tempfile.mkdtemp()) / "h.sqlite3"
     ctrl = Controller(cfg, None if args.screenshot else cfg_path, hist_path)
+    if not args.screenshot:
+        from .core.profiles import ProfileStore
+        profile_store = ProfileStore()
+        try:
+            profile_store.initialize(cfg)
+            ctrl.profile_store = profile_store
+        except (OSError, ValueError, KeyError) as exc:
+            log.error("Profily se nepodařilo načíst: %s; běží původní lokální konfigurace", exc)
     widget = MainWidget(ctrl)
     tray = None
     if tray_ok and not args.screenshot:
