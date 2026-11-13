@@ -130,6 +130,7 @@ class GeneralConfig:
     start_minimized: bool = False
     minimize_to_tray: bool = True
     check_updates: bool = True
+    receive_beta_updates: bool = False  # předběžná vydání GitHub Releases, opt-in
     update_url: str = "https://github.com/mersl77/netmonitor/releases"   # GitHub repo nebo JSON manifest
     auto_update: bool = False     # instalovat nové verze bez ptaní (jen nainstalovaná verze pro Windows)
     skipped_version: str = ""
