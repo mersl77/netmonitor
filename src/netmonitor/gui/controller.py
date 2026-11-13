@@ -168,13 +168,11 @@ class Controller(QObject):
 
     def _save_now(self) -> None:
         cfg = self.cfg.copy()
-        store = self.profile_store
-        profile_id = store.active_id() if store is not None else None
-        def persist():
-            cfgmod.save_config(cfg, self.config_path)
-            if store is not None and profile_id is not None:
-                store.save(profile_id, cfg)
-        self._run_bg("save-config", persist)
+        # Malý atomický JSON zápis musí doběhnout před přepnutím profilu,
+        # jinak by asynchronní zápis mohl obnovit konfiguraci předchozího profilu.
+        cfgmod.save_config(cfg, self.config_path)
+        if self.profile_store is not None:
+            self.profile_store.save_active(cfg)
 
     def _apply_targets(self) -> None:
         targets = self.cfg.real_targets()
