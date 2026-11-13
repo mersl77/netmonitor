@@ -1047,7 +1047,8 @@ class SettingsDialog(QDialog):
         local_id = store.active_id()
         record = store.record(local_id)
         name = record["name"]
-        config = self.ctrl.cfg.copy().to_dict()
+        from ..core.sync_config import export_shared
+        config = export_shared(self.ctrl.cfg.copy())
         account = self.sync_email.text().strip().casefold()
         server = self.sync_client.base_url
 
@@ -1077,9 +1078,9 @@ class SettingsDialog(QDialog):
         server = self.sync_client.base_url
 
         def download():
-            from ..core.config import AppConfig
+            from ..core.sync_config import merge_shared
             result = self.sync_client.download(profile_id)
-            config = AppConfig.from_dict(result["config"])
+            config = merge_shared(result["config"], self.ctrl.cfg)
             # Nezměníme právě běžící konfiguraci a při kolizi názvů
             # nabídneme unikátní pojmenování.
             existing = {p["name"].casefold() for p in store.list_profiles()}
