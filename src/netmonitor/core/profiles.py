@@ -55,6 +55,29 @@ class ProfileStore:
     def active_id(self) -> str:
         return self._read()["active"]
 
+    def record(self, profile_id: str) -> dict:
+        for item in self._read()["profiles"]:
+            if item["id"] == profile_id:
+                return dict(item)
+        raise ValueError("Neznámý profil")
+
+    def bind_remote(self, profile_id: str, remote_id: str, revision: int,
+                    account: str, server: str) -> None:
+        """Spáruje lokální profil se vzdáleným po potvrzeném úspěšném zápisu."""
+        uuid.UUID(remote_id)
+        if not isinstance(revision, int) or revision < 1:
+            raise ValueError("Neplatná revize")
+        index = self._read()
+        for item in index["profiles"]:
+            if item["id"] == profile_id:
+                item["remote_id"] = remote_id
+                item["remote_revision"] = revision
+                item["remote_account"] = account.strip().casefold()
+                item["remote_server"] = server.rstrip("/")
+                atomic_write_json(self.index_path, index)
+                return
+        raise ValueError("Neznámý profil")
+
     def load(self, profile_id: str) -> AppConfig:
         if profile_id not in {p["id"] for p in self.list_profiles()}:
             raise ValueError("Neznámý profil")
