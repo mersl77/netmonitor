@@ -43,7 +43,7 @@ def test_login_and_profiles(monkeypatch):
             return Response([{"id": "11111111-1111-4111-8111-111111111111",
                               "name": "Soukromý", "revision": 1}])
         raise AssertionError(req.full_url)
-    monkeypatch.setattr("netmonitor.core.sync_client.urlopen", fake)
+    monkeypatch.setattr("netmonitor.core.sync_client._open", fake)
     client = SyncClient()
     client.login("me@example.org", "secret")
     assert client.access_token == "test-token"
@@ -57,7 +57,7 @@ def test_409_conflict(monkeypatch):
     def fake(*args, **kwargs):
         raise HTTPError("https://sync.zelina.eu/profiles/id", 409,
                         "Conflict", {}, None)
-    monkeypatch.setattr("netmonitor.core.sync_client.urlopen", fake)
+    monkeypatch.setattr("netmonitor.core.sync_client._open", fake)
     client = SyncClient(access_token="token")
     with pytest.raises(SyncError) as exc:
         client.upload("11111111-1111-4111-8111-111111111111", {}, 1)
