@@ -1,0 +1,75 @@
+# Testy a Docker image synchronizačního serveru (ghcr.io/<vlastník>/netmonitor-sync).
+# Image se sestaví po změně ve složce sync-server nebo ručně (Actions → Run workflow).
+name: Sync server image
+
+on:
+  push:
+    branches: [main, feature/account-profiles-sync]
+    paths: ["sync-server/**", ".github/workflows/sync-server.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: sync-server-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Server tests
+        working-directory: sync-server
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q tests
+      - name: Build image
+        working-directory: sync-server
+        run: docker build -t netmonitor-sync:ci .
+      - name: End-to-end test of the real stack (docker-compose.yml + PostgreSQL)
+        working-directory: sync-server
+        env:
+          POSTGRES_PASSWORD: ci-only-password
+          JWT_SECRET: ci-only-secret-ci-only-secret-ci-only-secret
+        run: |
+          set -euo pipefail
+          docker tag netmonitor-sync:ci ghcr.io/mersl77/netmonitor-sync:latest
+          docker pull -q postgres:17
+          docker network create nginx-proxy-manager_default
+          docker compose up -d --pull never --wait --wait-timeout 120 || { docker compose logs; exit 1; }
+          api=http://127.0.0.1:8766
+          curl -fsS "$api/health"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' "$api/profiles")" = 401 ]
+          key="$(docker compose exec -T api python -m app.cli create-key "CI test")"
+          json() { curl -fsS -H 'Content-Type: application/json' "$@"; }
+          token="$(json -d "{\"email\":\"ci@example.org\",\"password\":\"ci-heslo-dlouhe-1\",\"license_key\":\"$key\"}" \
+            "$api/auth/register" | python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+          # klíč je jednorázový
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+            -d "{\"email\":\"x@example.org\",\"password\":\"ci-heslo-dlouhe-1\",\"license_key\":\"$key\"}" "$api/auth/register")" = 403 ]
+          created="$(json -H "Authorization: Bearer $token" -d '{"name":"Firemní","config":{"ping":{"targets":[]}}}' "$api/profiles")"
+          id="$(echo "$created" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          json -X PUT -H "Authorization: Bearer $token" -d '{"revision":1,"name":"Práce"}' "$api/profiles/$id" | grep -q '"revision":2'
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
+            -d '{"revision":1,"name":"Jinak"}' "$api/profiles/$id")" = 409 ]
+          json -H "Authorization: Bearer $token" "$api/profiles" | grep -q 'Práce'
+          docker compose exec -T api python -m app.cli list-users | grep -q ci@example.org
+          docker compose down -v
+      - name: Push to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/netmonitor-sync"
+          version="$(python -c "import re;print(re.search(r'__version__ = \"(.+?)\"', open('sync-server/app/__init__.py').read()).group(1))")"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for tag in "$version" "sha-${GITHUB_SHA::12}" latest; do
+            docker tag netmonitor-sync:ci "$image:$tag"
+            docker push "$image:$tag"
+          done

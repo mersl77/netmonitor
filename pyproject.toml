@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netmonitor"
-version = "1.3.4"
+version = "1.4.0"
 description = "NetMonitor – nativní desktopový widget pro sledování sítě a dostupnosti cílů (ICMP)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -13,6 +13,7 @@ authors = [{ name = "Marceli Zelina" }]
 dependencies = [
     "PySide6>=6.6",
     "psutil>=5.9",
+    "segno>=1.6",
 ]
 
 [project.optional-dependencies]

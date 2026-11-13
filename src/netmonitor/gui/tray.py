@@ -22,6 +22,7 @@ class Tray(QSystemTrayIcon):
         widget.ctrl.notification.connect(self.on_notification)
         widget.visibility_toggled.connect(lambda _v: self._rebuild_menu())
         widget.ctrl.config_changed.connect(lambda _c: self._rebuild_menu())
+        widget.ctrl.profiles_changed.connect(self._rebuild_menu)
 
     def _rebuild_menu(self) -> None:
         old = self._menu

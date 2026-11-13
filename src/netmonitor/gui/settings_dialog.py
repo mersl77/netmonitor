@@ -289,6 +289,7 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(theme.DIALOG_QSS)
         self.resize(820, 640)
         self._loading = False
+        self._binds = []
         lay = QVBoxLayout(self)
         self.tabs = QTabWidget()
         lay.addWidget(self.tabs)
@@ -298,6 +299,16 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._tab_targets(), "Ping cíle")
         self.tabs.addTab(self._tab_notifications(), "Upozornění")
         self.tabs.addTab(self._tab_history(), "Historie")
+        from .account_tabs import AccountTab, AdminTab, ProfilesTab
+        self.profiles_tab = ProfilesTab(ctrl, self)
+        self.account_tab = AccountTab(ctrl, self)
+        self.admin_tab = AdminTab(ctrl, self)
+        self.tabs.addTab(self.profiles_tab, "Profily")
+        self.tabs.addTab(self.account_tab, "Účet a synchronizace")
+        self.profiles_tab.switched.connect(self.load)
+        if ctrl.sync is not None:
+            ctrl.sync.changed.connect(self._admin_tab_visibility)
+        self._admin_tab_visibility()
         bottom = QHBoxLayout()
         self.status = hint("Změny se projeví okamžitě a automaticky se uloží.")
         bottom.addWidget(self.status, 1)
@@ -307,6 +318,17 @@ class SettingsDialog(QDialog):
         lay.addLayout(bottom)
         ctrl.config_changed.connect(self._on_external_change)
         self.load()
+
+    def _admin_tab_visibility(self) -> None:
+        """Karta Správa je vidět jen přihlášenému správci serveru."""
+        sync = self.ctrl.sync
+        wanted = sync is not None and sync.logged_in and sync.client.is_admin
+        index = self.tabs.indexOf(self.admin_tab)
+        if wanted and index < 0:
+            self.tabs.addTab(self.admin_tab, "Správa")
+            self.admin_tab.refresh()
+        elif not wanted and index >= 0:
+            self.tabs.removeTab(index)
 
     # ------------------------------------------------------------------ pomocné
     def _apply(self, fn: Callable[[AppConfig], None]) -> None:
@@ -339,8 +361,6 @@ class SettingsDialog(QDialog):
         sp.valueChanged.connect(self._setter(section, key, float if decimals is not None else int))
         self._binds.append((sp, section, key))
         return sp
-
-    _binds: list = []
 
     def _on_external_change(self, cfg: AppConfig) -> None:
         # změna vyvolaná tímto dialogem: ovládací prvky už odpovídají. Synchronní znovunačtení by navíc
@@ -412,6 +432,8 @@ class SettingsDialog(QDialog):
         f.addRow(self._check("Spouštět minimalizované (jen ikona v oznamovací oblasti)", "general", "start_minimized"))
         f.addRow(self._check("Při skrytí minimalizovat do oznamovací oblasti", "general", "minimize_to_tray"))
         f.addRow(self._check("Kontrolovat nové verze (při startu a každých 6 hodin)", "general", "check_updates"))
+        f.addRow(self._check("Přijímat beta aktualizace", "general", "receive_beta_updates"))
+        f.addRow(hint("Ve výchozím stavu vypnuto. Po zapnutí bude GitHub nabízet také testovací vydání."))
         f.addRow(self._check("Instalovat aktualizace automaticky (bez ptaní)", "general", "auto_update"))
         self.update_url = QLineEdit()
         self.update_url.setPlaceholderText("https://github.com/<účet>/<repozitář>/releases  nebo JSON manifest")

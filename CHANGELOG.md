@@ -1,5 +1,16 @@
 # Změny
 
+## 1.4.0
+- **Profily** (Soukromý, Firemní, Zákazník…): každý má vlastní ping cíle (IP adresy, domény, sekce), upozornění a uložené IP/DNS předvolby. Přepnutí jedním kliknutím – pravé tlačítko na widgetu nebo na ikoně v liště → Profil. Stávající nastavení se převede do profilu „Soukromý“.
+- **Účet a automatická synchronizace** (volitelné, vlastní server): po přihlášení se profily samy nahrávají a stahují na další počítače. Když se stejný profil změní na dvou místech, aplikace se zeptá, kterou verzi zachovat. Bez přihlášení funguje vše lokálně jako dosud.
+- **Registrace licenčním klíčem**: nový účet lze založit jen s klíčem od správce serveru.
+- **Karta Správa** (jen správce): licenční klíče s poznámkou, počtem použití a platností, tlačítko Kopírovat pozvánku, přehled a blokování účtů. Správce se přihlašuje heslem a kódem z autentikátoru (nastavení QR kódem).
+- **IP/DNS předvolba profilu**: po přepnutí profilu aplikace nabídne použití přiřazené předvolby; změnu vždy potvrzuje uživatel.
+- **Profil podle sítě**: profil lze spojit se sítí (Wi-Fi podle názvu, kabel podle brány); po připojení aplikace nabídne přepnutí.
+- Přihlášení vydrží restart; na počítači se ukládá jen přihlašovací token (Windows: šifrováno), heslo nikdy.
+- Volba „Přijímat beta aktualizace“ v Nastavení → Obecné.
+- Synchronizační server je ve složce `sync-server` (Docker), viz `sync-server/README.md`.
+
 ## 1.3.4
 - Linux: když XWayland (Qt xcb) nejde načíst – typicky chybí libxcb-cursor0 –, aplikace na Waylandu místo pádu nastartuje nativně a v Nastavení i v logu řekne, co doinstalovat (#1)
 - Linux: položka v menu (.desktop) má jen jednu hlavní kategorii (Network), v některých prostředích se už nezobrazí dvakrát (#2)

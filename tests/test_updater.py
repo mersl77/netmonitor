@@ -122,3 +122,37 @@ def test_config_migration_v3():
     custom = AppConfig.from_dict({"schema_version": 2, "appearance": {"glass_alpha": 0.3},
                                   "general": {"update_url": "https://zelina.eu/m.json"}})
     assert custom.appearance.glass_alpha == 0.3 and custom.general.update_url == "https://zelina.eu/m.json"
+
+
+def test_beta_update_channel_is_opt_in():
+    from netmonitor.core.config import AppConfig
+    assert AppConfig.from_dict({}).general.receive_beta_updates is False
+    cfg = AppConfig.from_dict({"general": {"receive_beta_updates": True}})
+    assert cfg.general.receive_beta_updates is True
+
+
+def test_beta_uses_releases_list_and_orders_versions_correctly():
+    stable = dict(GH, tag_name="v1.3.4", draft=False, prerelease=False)
+    beta = dict(GH, tag_name="v1.4.0b2", draft=False, prerelease=True)
+    old = dict(GH, tag_name="v1.4.0b1", draft=False, prerelease=True)
+    draft = dict(GH, tag_name="v1.9.0", draft=True, prerelease=True)
+    seen = []
+
+    def fetch(url):
+        seen.append(url)
+        return [stable, beta, old, draft] if "?per_page=" in url else stable
+
+    src = "https://github.com/mersl77/netmonitor/releases"
+    assert u.check(src, fetch, "win32").version == "1.3.4"
+    assert u.check(src, fetch, "win32", allow_beta=True).version == "1.4.0b2"
+    assert seen[-1].endswith("/releases?per_page=30")
+    assert u.is_newer("1.4.0b2", "1.4.0b1")
+    assert u.is_newer("1.4.0", "1.4.0b2")
+    assert not u.is_newer("1.4.0b1", "1.4.0")
+    assert not u.is_newer("1.4.0b1", "1.4.0b2")
+
+
+def test_beta_channel_handles_no_releases():
+    with pytest.raises(u.UpdateError, match="žádné"):
+        u.check("https://github.com/mersl77/netmonitor/releases",
+                lambda url: [], "win32", allow_beta=True)

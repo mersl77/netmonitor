@@ -1,0 +1,32 @@
+name: Validate NetMonitor PR
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Qt runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 libgl1 iputils-ping
+      - name: Install project
+        run: python -m pip install -e ".[dev]"
+      - name: Sync server dependencies (client tests run against the real server code)
+        run: python -m pip install -r sync-server/requirements-dev.txt
+      - name: Python syntax check
+        run: python -m compileall -q src tests
+      - name: Test suite
+        run: python -m pytest -q
+      - name: Sync server test suite
+        working-directory: sync-server
+        run: python -m pytest -q tests

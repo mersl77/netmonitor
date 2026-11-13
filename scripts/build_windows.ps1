@@ -7,8 +7,8 @@
       -NoInstaller    nevytvářet instalátor ani když je Inno Setup k dispozici
   Výstup:
       dist\NetMonitor\NetMonitor.exe            (přenosná verze – celá složka)
-      dist\NetMonitor-1.3.4-win64.zip
-      dist\NetMonitor-1.3.4-setup.exe           (pokud je nainstalovaný Inno Setup 6)
+      dist\NetMonitor-1.4.0-win64.zip
+      dist\NetMonitor-1.4.0-setup.exe           (pokud je nainstalovaný Inno Setup 6)
   Nemění nic mimo složku projektu (venv v .venv-build).
 #>
 param([switch]$SkipTests, [switch]$NoInstaller)
@@ -47,7 +47,10 @@ Write-Host "==> PyInstaller" -ForegroundColor Cyan
 & $vpy -m PyInstaller packaging\netmonitor.spec --noconfirm --clean
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller selhal" }
 
-$zip = "dist\NetMonitor-1.3.4-win64.zip"
+& $vpy scripts\smoke_frozen.py dist\NetMonitor\NetMonitor.exe
+if ($LASTEXITCODE -ne 0) { throw "Spuštění sestavené aplikace selhalo" }
+
+$zip = "dist\NetMonitor-1.4.0-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path dist\NetMonitor\* -DestinationPath $zip
 Write-Host "==> Přenosná verze: dist\NetMonitor\NetMonitor.exe  |  $zip" -ForegroundColor Green
@@ -57,7 +60,7 @@ if (-not $NoInstaller) {
               "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
     if ($iscc) {
         & $iscc packaging\windows\netmonitor.iss
-        Write-Host "==> Instalátor: dist\NetMonitor-1.3.4-setup.exe" -ForegroundColor Green
+        Write-Host "==> Instalátor: dist\NetMonitor-1.4.0-setup.exe" -ForegroundColor Green
     } else {
         Write-Host "Inno Setup 6 nenalezen – instalátor přeskočen (winget install JRSoftware.InnoSetup)" -ForegroundColor Yellow
     }

@@ -1,0 +1,103 @@
+# Jednorázový beta build oddělený od stabilního release workflow.
+# Na nové změny v běžném kódu se nespouští automaticky; spustí se po
+# úpravě samotného preview workflow nebo ručně.
+name: NetMonitor 1.4 Beta Preview
+
+on:
+  push:
+    branches: [feature/account-profiles-sync]
+    paths: [.github/workflows/preview.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: netmonitor-beta-1
+  cancel-in-progress: false
+
+env:
+  TAG: v1.4.0b6
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ env.TAG }}
+    steps:
+      - name: Create draft prerelease (not published until all platforms pass)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" != "true" ]; then
+              echo "Refusing to overwrite a published beta"; exit 1
+            fi
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --draft --prerelease \
+              --title "NetMonitor 1.4.0 beta 6 – testovací verze" \
+              --notes "TESTOVACÍ VERZE. Novinky proti beta 5: QR kód pro zapnutí dvoufázového ověření, tlačítko Kopírovat pozvánku u licenčního klíče, nabídka IP/DNS předvolby po přepnutí profilu a nabídka profilu podle sítě (Wi-Fi nebo brána). Dále z bety 5: přepínání profilů z widgetu a z lišty, automatická synchronizace na vlastní server, registrace licenčním klíčem, správa klíčů a účtů s 2FA. Server se touto verzí nemění. Před instalací zálohujte config.json. Stabilní verze je v1.3.4."
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+          - os: ubuntu-22.04
+            name: linux-x86_64
+          - os: macos-latest
+            name: macos-arm64
+          - os: macos-15-intel
+            name: macos-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 libgl1 iputils-ping
+      - name: Windows Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup -y --no-progress
+      - name: Build & test Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1
+      - name: Build & test Linux
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ./scripts/build_linux.sh --deb
+      - name: Build & test macOS
+        if: runner.os == 'macOS'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ./scripts/build_macos.sh --dmg
+      - name: Upload verified binary packages to draft beta release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/*.zip dist/*-setup.exe dist/*.tar.gz dist/*.deb dist/*.dmg)
+          [ ${#files[@]} -gt 0 ] || { echo "No build assets"; exit 1; }
+          gh release upload "$TAG" "${files[@]}" --clobber -R "$GITHUB_REPOSITORY"
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish only when every platform build passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease

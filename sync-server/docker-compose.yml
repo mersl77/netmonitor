@@ -1,0 +1,60 @@
+# NetMonitor Sync – stack pro Portainer (Stacks → Add stack → Web editor).
+# Hodnoty zadejte v části „Environment variables“:
+#   POSTGRES_PASSWORD   dlouhé náhodné heslo databáze      (openssl rand -hex 24)
+#   JWT_SECRET          podpisový klíč, min. 32 znaků       (openssl rand -hex 32)
+# Volitelné: TAG (výchozí latest), API_BIND (výchozí 127.0.0.1:8766), PROXY_NETWORK,
+#   FORWARDED_ALLOW_IPS, REGISTRATION_ENABLED.
+name: netmonitor-sync
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: netmonitor
+      POSTGRES_USER: netmonitor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Zadejte POSTGRES_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netmonitor -d netmonitor"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: ghcr.io/mersl77/netmonitor-sync:${TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: netmonitor
+      POSTGRES_USER: netmonitor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Zadejte POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?Zadejte JWT_SECRET}
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      # Důvěřovat X-Forwarded-For jen od reverzní proxy v sítích Dockeru.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.16.0.0/12}
+    ports:
+      - "${API_BIND:-127.0.0.1:8766}:8000"
+    networks:
+      backend:
+      proxy:
+        aliases: [netmonitor-sync-api]      # cíl pro Nginx Proxy Manager: http://netmonitor-sync-api:8000
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+volumes:
+  db-data:
+
+networks:
+  backend:
+    internal: true
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-nginx-proxy-manager_default}

@@ -48,12 +48,20 @@ class UpdateError(Exception):
     pass
 
 
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)(?:\.(\d+))?(?:(a|b|rc)(\d+))?$", re.I)
+
+
 def version_key(v: str) -> tuple:
-    out = []
-    for part in str(v).strip().lstrip("vV").split("."):
-        num = "".join(ch for ch in part if ch.isdigit())
-        out.append(int(num) if num else 0)
-    return tuple((out + [0] * 4)[:4])
+    """Řazení stabilních a PEP-440-like předběžných verzí.
+
+    1.4.0a1 < 1.4.0b1 < 1.4.0rc1 < 1.4.0.
+    """
+    m = _VERSION_RE.fullmatch(str(v).strip())
+    if m is None:
+        raise ValueError("Nepodporovaný formát verze")
+    major, minor, patch, stage, serial = m.groups()
+    rank = {"a": 0, "b": 1, "rc": 2, None: 3}[stage.lower() if stage else None]
+    return int(major), int(minor), int(patch or 0), rank, int(serial or 0)
 
 
 def is_newer(latest: str, current: str = __version__) -> bool:
@@ -120,10 +128,34 @@ def _get_json(url: str, timeout: float = 10.0) -> dict:
         raise UpdateError(f"Kontrola aktualizací selhala: {e}") from None
 
 
-def check(source: str, fetch: Callable[[str], dict] = _get_json, platform: str = sys.platform) -> UpdateInfo:
+def check(source: str, fetch: Callable[[str], dict] = _get_json,
+          platform: str = sys.platform, allow_beta: bool = False) -> UpdateInfo:
     kind, url = api_url_for(source)
-    data = fetch(url)
-    return parse_github(data, platform) if kind == "github" else parse_manifest(data, platform)
+    if kind != "github" or not allow_beta:
+        data = fetch(url)
+        return parse_github(data, platform) if kind == "github" else parse_manifest(data, platform)
+
+    # /releases/latest beta vydání záměrně ignoruje; seznam je obsahuje.
+    releases_url = url.removesuffix("/latest") + "?per_page=30"
+    releases = fetch(releases_url)
+    if not isinstance(releases, list):
+        raise UpdateError("GitHub nevrátil seznam vydání")
+    candidates = [
+        release for release in releases
+        if isinstance(release, dict) and not release.get("draft")
+        and version_key_safe(str(release.get("tag_name", ""))) is not None
+    ]
+    if not candidates:
+        raise UpdateError("GitHub neobsahuje žádné kompatibilní vydání")
+    newest = max(candidates, key=lambda item: version_key(str(item["tag_name"])))
+    return parse_github(newest, platform)
+
+
+def version_key_safe(value: str) -> tuple | None:
+    try:
+        return version_key(value)
+    except ValueError:
+        return None
 
 
 def download(info: UpdateInfo, dest_dir: Path, progress: Callable[[int, int], None] | None = None,

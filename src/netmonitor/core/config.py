@@ -130,6 +130,7 @@ class GeneralConfig:
     start_minimized: bool = False
     minimize_to_tray: bool = True
     check_updates: bool = True
+    receive_beta_updates: bool = False  # předběžná vydání GitHub Releases, opt-in
     update_url: str = "https://github.com/mersl77/netmonitor/releases"   # GitHub repo nebo JSON manifest
     auto_update: bool = False     # instalovat nové verze bez ptaní (jen nainstalovaná verze pro Windows)
     skipped_version: str = ""
@@ -167,6 +168,7 @@ class NetworkConfig:
     gateway_probe: bool = True
     linux_prefer_xwayland: bool = True   # na Waylandu spustit přes XWayland (pozice/režim okna fungují)
     ip_profiles: list = field(default_factory=list)   # uložené profily nastavení IP (viz core/ipconfig.py)
+    switch_ip_profile: str = ""     # IP/DNS předvolba nabídnutá při přepnutí na tento profil ("" = žádná)
 
 
 @dataclass
@@ -244,6 +246,8 @@ class AppConfig:
         n.isp_provider = n.isp_provider if n.isp_provider in ("ipinfo", "ripestat") else "ipinfo"
         from .ipconfig import sanitize_profiles
         n.ip_profiles = sanitize_profiles(n.ip_profiles)
+        if n.switch_ip_profile not in {p["name"] for p in n.ip_profiles}:
+            n.switch_ip_profile = ""
         p = self.ping
         p.max_concurrent = int(_clamp(p.max_concurrent, 1, 128, 16))
         t = p.thresholds

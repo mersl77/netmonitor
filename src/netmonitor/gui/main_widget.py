@@ -444,6 +444,7 @@ class MainWidget(QWidget):
             f.setBold(True)
             up.setFont(f)
             m.addSeparator()
+        self._add_profile_menu(m)
         m.addAction(tr("Nastavení…"), self.open_settings.emit)
         m.addAction(tr("Historie…"), lambda: self.open_history.emit(""))
         m.addAction(tr("Test rychlosti internetu…"), self.open_speedtest.emit)
@@ -486,6 +487,33 @@ class MainWidget(QWidget):
         m.addAction(tr("O aplikaci…"), self.open_about.emit)
         m.addAction(tr("Ukončit"), self.quit_requested.emit)
         return m
+
+    def _add_profile_menu(self, m: QMenu) -> None:
+        """Rychlé přepnutí profilu (Soukromý / Firemní…) z widgetu i z ikony v liště."""
+        store = self.ctrl.profile_store
+        if store is None:
+            return
+        try:
+            profiles, active = store.list_profiles(), store.active_id()
+        except (OSError, ValueError, KeyError):
+            return
+        current = next((p["name"] for p in profiles if p["id"] == active), "")
+        sub = m.addMenu(f"{tr('Profil')}: {current}")
+        grp = QActionGroup(sub)
+        for p in profiles:
+            act = QAction(p["name"], sub, checkable=True, checked=p["id"] == active)
+            act.triggered.connect(lambda _=False, pid=p["id"]: self._switch_profile(pid))
+            grp.addAction(act)
+            sub.addAction(act)
+        sub.addSeparator()
+        sub.addAction(tr("Spravovat profily…"), self.open_settings.emit)
+        m.addSeparator()
+
+    def _switch_profile(self, profile_id: str) -> None:
+        try:
+            self.ctrl.switch_profile(profile_id)
+        except (OSError, ValueError, KeyError) as exc:
+            log.error("Profil nelze přepnout: %s", exc)
 
     def _set_appearance(self, **kw) -> None:
         cfg = self.ctrl.cfg.copy()
