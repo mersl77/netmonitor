@@ -44,6 +44,7 @@ class Controller(QObject):
         super().__init__(parent)
         self.cfg = cfg
         self.config_path = config_path
+        self.profile_store = None  # aktivuje hlavní aplikace; screenshot/test režim bez profilů
         self._bg = ThreadPoolExecutor(max_workers=3, thread_name_prefix="bg")
         self._deliver.connect(self._on_deliver)
         self._busy: set[str] = set()
@@ -167,7 +168,13 @@ class Controller(QObject):
 
     def _save_now(self) -> None:
         cfg = self.cfg.copy()
-        self._run_bg("save-config", lambda: cfgmod.save_config(cfg, self.config_path))
+        store = self.profile_store
+        profile_id = store.active_id() if store is not None else None
+        def persist():
+            cfgmod.save_config(cfg, self.config_path)
+            if store is not None and profile_id is not None:
+                store.save(profile_id, cfg)
+        self._run_bg("save-config", persist)
 
     def _apply_targets(self) -> None:
         targets = self.cfg.real_targets()
