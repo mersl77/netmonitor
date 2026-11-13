@@ -1073,6 +1073,8 @@ class SettingsDialog(QDialog):
             return
         profile_id = item["id"]
         name = item["name"]
+        account = self.sync_email.text().strip().casefold()
+        server = self.sync_client.base_url
 
         def download():
             from ..core.config import AppConfig
@@ -1088,8 +1090,7 @@ class SettingsDialog(QDialog):
                 i += 1
             local_id = store.create(candidate, config)
             store.bind_remote(local_id, result["id"], result["revision"],
-                              self.sync_email.text().strip().casefold(),
-                              self.sync_client.base_url)
+                              account, server)
             return candidate
 
         self._sync_job("download", download)
