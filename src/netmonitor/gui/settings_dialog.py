@@ -1004,6 +1004,12 @@ class SettingsDialog(QDialog):
                     self.sync_profile_list.addItem(p["name"], p)
             self.sync_status.setText("Cloudové profily načteny.")
         elif key == "upload":
+            local_id, remote_id, revision, account, server = value
+            try:
+                self.ctrl.profile_store.bind_remote(local_id, remote_id, revision, account, server)
+            except (OSError, ValueError) as exc:
+                self.sync_status.setText("Cloud uložen, ale lokální vazba selhala: " + str(exc))
+                return
             self.sync_status.setText("Profil uložen na server. Načítám seznam…")
             self._sync_refresh()
         elif key == "download":
@@ -1038,10 +1044,24 @@ class SettingsDialog(QDialog):
         except OSError as exc:
             self.sync_status.setText("Konfiguraci nelze uložit: " + str(exc))
             return
-        name = next(p["name"] for p in store.list_profiles() if p["id"] == store.active_id())
+        local_id = store.active_id()
+        record = store.record(local_id)
+        name = record["name"]
         config = self.ctrl.cfg.copy().to_dict()
-        # Odeslat nový profil; nezaměňovat s úpravou již existujícího profilu.
-        self._sync_job("upload", lambda: self.sync_client.create(name, config))
+        account = self.sync_email.text().strip().casefold()
+        server = self.sync_client.base_url
+
+        def upload():
+            if (record.get("remote_id") and record.get("remote_account") == account
+                    and record.get("remote_server") == server):
+                result = self.sync_client.upload(
+                    record["remote_id"], config, record["remote_revision"]
+                )
+            else:
+                result = self.sync_client.create(name, config)
+            return (local_id, result["id"], result["revision"], account, server)
+
+        self._sync_job("upload", upload)
 
     def _sync_download(self) -> None:
         store = self.ctrl.profile_store
@@ -1066,7 +1086,10 @@ class SettingsDialog(QDialog):
             while candidate.casefold() in existing:
                 candidate = f"{name} ({i})"
                 i += 1
-            store.create(candidate, config)
+            local_id = store.create(candidate, config)
+            store.bind_remote(local_id, result["id"], result["revision"],
+                              self.sync_email.text().strip().casefold(),
+                              self.sync_client.base_url)
             return candidate
 
         self._sync_job("download", download)
