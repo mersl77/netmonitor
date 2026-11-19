@@ -16,6 +16,7 @@ from ..core.notifier import fmt_duration
 from . import theme
 from .controller import Controller
 from .ping_panel import fmt_rtt
+from .widgets import show_dialog
 
 RANGES = [("1 hodina", 3600, 0), ("24 hodin", 86400, 300), ("7 dní", 7 * 86400, 3600), ("30 dní", 30 * 86400, 4 * 3600)]
 EVENT_LABELS = {"down": "Výpadek", "up": "Obnovení", "wan_change": "Změna WAN IP", "internet_down": "Výpadek internetu",
@@ -246,9 +247,7 @@ class HistoryDialog(QDialog):
             if i >= 0:
                 self.combo.setCurrentIndex(i)
         self.refresh()
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        show_dialog(self)
         self._timer.start()
 
     def closeEvent(self, e):
