@@ -97,6 +97,57 @@ def test_dialogs_open(ctrl):
     s.close()
 
 
+def test_reset_targets_uses_neutral_defaults(ctrl, monkeypatch):
+    """Regrese L03: obnova cílů používá novou sadu a proběhne jen po potvrzení."""
+    from PySide6.QtWidgets import QMessageBox
+    from netmonitor.gui.main_widget import MainWidget
+    from netmonitor.gui.settings_dialog import SettingsDialog
+
+    questions = []
+    answer = QMessageBox.StandardButton.No
+
+    def question(_parent, _title, text):
+        questions.append(text)
+        return answer
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    w = MainWidget(ctrl)
+    s = SettingsDialog(ctrl, w)
+    try:
+        original = ctrl.cfg.to_dict()
+        s._reset_targets()
+        assert ctrl.cfg.to_dict() == original
+        answer = QMessageBox.StandardButton.Yes
+        s._reset_targets()
+        assert [t.host for t in ctrl.cfg.real_targets()] == ["1.1.1.1", "8.8.8.8", "cloudflare.com"]
+        assert [t.name for t in ctrl.cfg.ping.targets if t.is_section] == ["Internet", "Místní síť"]
+        assert "10" not in questions[-1]
+        assert s.table.topLevelItemCount() == 2
+    finally:
+        s.close()
+        w.close()
+
+
+def test_default_targets_use_single_automatic_gateway_probe(ctrl):
+    """Regrese L03: místní brána je jen automatická sonda, nikoli další výchozí cíl."""
+    from netmonitor.core.network_info import InterfaceInfo, NetworkSnapshot
+    from netmonitor.gui.controller import GATEWAY_ID
+
+    a = InterfaceInfo(name="test0", display_name="Test", gateway="192.0.2.1")
+    ctrl.network = NetworkSnapshot(active=a, interfaces=(a,), has_default_route=True, default_iface=a.name)
+    cfg = AppConfig.from_dict({"network": {"external_api": False}})
+    ctrl.update_config(cfg, save=False)
+    snapshots = ctrl.engine.snapshots()
+    assert len(snapshots) == 4
+    assert [s.host for s in snapshots.values()].count(a.gateway) == 1
+    assert snapshots[GATEWAY_ID].host == a.gateway
+    assert GATEWAY_ID not in {t.id for t in ctrl.cfg.ping.targets}
+    cfg = ctrl.cfg.copy()
+    cfg.network.gateway_probe = False
+    ctrl.update_config(cfg, save=False)
+    assert GATEWAY_ID not in ctrl.engine.snapshots()
+
+
 def test_shutdown_is_clean(ctrl):
     import threading
     ctrl.start()
