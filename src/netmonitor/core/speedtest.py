@@ -4,6 +4,12 @@
 * stahování: 6 paralelních proudů po dobu ~8 s, prvních ~1,5 s (náběh TCP) se do výsledku nepočítá
 * nahrávání: 4 paralelní proudy po dobu ~8 s
 
+Odpovědi musí mít HTTP 2xx. Download ověřuje požadovanou délku; předčasný konec
+zneplatní celou fázi. Ukončení čtení časovým limitem měření je záměrné a přijaté
+bajty se započítají. Upload započítá jen celé přenosy potvrzené serverem, takže
+jeho průběžná rychlost se mění po celých přenosech a na pomalé lince může být
+potřeba delší měření.
+
 Měří se celá cesta počítač → internet (včetně Wi-Fi). Používá se jen pokud jsou povolené
 externí dotazy. Výsledek je orientační – běžný test v prohlížeči může vyjít mírně jinak.
 """
@@ -52,6 +58,13 @@ def mbps(nbytes: float, seconds: float) -> float:
     return nbytes * 8 / seconds / 1e6 if seconds > 0 else 0.0
 
 
+def _check_response(response: http.client.HTTPResponse) -> None:
+    if response.status == 429:
+        raise OSError("Měřicí server odmítl příliš mnoho požadavků (HTTP 429). Zkuste test později.")
+    if not 200 <= response.status < 300:
+        raise OSError(f"Měřicí server vrátil HTTP {response.status}.")
+
+
 def measure_latency(n: int = 20, cancelled=lambda: False) -> tuple[float, float, str]:
     c = _conn()
     times, colo = [], ""
@@ -62,7 +75,9 @@ def measure_latency(n: int = 20, cancelled=lambda: False) -> tuple[float, float,
             t0 = time.perf_counter()
             c.request("GET", "/__down?bytes=0", headers=HEADERS)
             r = c.getresponse()
-            r.read()
+            _check_response(r)
+            if r.read(1) or r.length not in (0, None):
+                raise OSError("Měřicí server vrátil neočekávaná data místo prázdné odpovědi pro odezvu.")
             dt = (time.perf_counter() - t0) * 1000
             colo = r.getheader("colo") or colo
             # odečti dobu zpracování na serveru (Server-Timing: cfSpeedWorker;dur=…) – jen přenos po síti
@@ -112,29 +127,32 @@ def _run_streams(worker, streams: int, duration: float, phase: str, progress: Pr
                  cancelled) -> float | None:
     meter = _Meter(warmup=min(1.5, duration / 4))
     stop = threading.Event()
-    errors: list[str] = []
+    errors: list[OSError | http.client.HTTPException] = []
 
     def wrap():
         try:
             worker(meter, stop)
         except (OSError, http.client.HTTPException) as e:
-            errors.append(str(e))
+            errors.append(e)
+            stop.set()
 
     threads = [threading.Thread(target=wrap, daemon=True, name=f"speed-{phase}-{i}") for i in range(streams)]
     for t in threads:
         t.start()
     start = time.perf_counter()
-    while time.perf_counter() - start < duration and not cancelled():
+    while time.perf_counter() - start < duration and not cancelled() and not stop.is_set():
         time.sleep(0.2)
+        if errors:
+            break
         if progress:
             progress(phase, min(1.0, (time.perf_counter() - start) / duration), meter.rate())
-        if errors and all(not t.is_alive() for t in threads):
-            break
     stop.set()
     for t in threads:
         t.join(timeout=5)
-    if meter.total == 0 and errors:
-        raise OSError(errors[0])
+    if errors:
+        raise errors[0]
+    if meter.total == 0 and not cancelled():
+        raise OSError("Během měření se nepodařilo dokončit žádný přenos.")
     return meter.rate()
 
 
@@ -144,21 +162,36 @@ def _download_worker(meter: _Meter, stop: threading.Event) -> None:
         while not stop.is_set():
             c.request("GET", f"/__down?bytes={DOWN_CHUNK}", headers=HEADERS)
             r = c.getresponse()
-            while not stop.is_set():
-                b = r.read(READ)
-                if not b:
+            _check_response(r)
+            if r.length is not None and r.length != DOWN_CHUNK:
+                raise OSError("Měřicí server vrátil neúplná data: "
+                              f"očekáváno {DOWN_CHUNK} bajtů, ohlášeno {r.length}.")
+            received = 0
+            try:
+                while not stop.is_set():
+                    b = r.read(READ)
+                    if not b:
+                        break
+                    if received + len(b) > DOWN_CHUNK:
+                        raise OSError("Měřicí server vrátil více dat, než bylo požadováno.")
+                    received += len(b)
+                    meter.add(len(b))
+                if stop.is_set():
                     break
-                meter.add(len(b))
-            if stop.is_set():
-                break
+                if received != DOWN_CHUNK or r.length not in (0, None):
+                    raise OSError("Měřicí server vrátil neúplná data při stahování "
+                                  f"({received} z {DOWN_CHUNK} bajtů).")
+            except (OSError, http.client.HTTPException):
+                # Již zobrazený průběžný odhad není platný výsledek chybné odpovědi.
+                meter.add(-received)
+                raise
     finally:
         c.close()
 
 
 class _CountingBody:
-    def __init__(self, size: int, meter: _Meter, stop: threading.Event):
+    def __init__(self, size: int, stop: threading.Event):
         self.left = size
-        self.meter = meter
         self.stop = stop
         self.block = os.urandom(64 * 1024)
 
@@ -167,7 +200,6 @@ class _CountingBody:
             return b""
         k = min(len(self.block), self.left, n if n and n > 0 else len(self.block))
         self.left -= k
-        self.meter.add(k)
         return self.block[:k]
 
 
@@ -175,15 +207,22 @@ def _upload_worker(meter: _Meter, stop: threading.Event) -> None:
     c = _conn()
     try:
         while not stop.is_set():
-            body = _CountingBody(UP_CHUNK, meter, stop)
+            body = _CountingBody(UP_CHUNK, stop)
             h = dict(HEADERS, **{"Content-Type": "application/octet-stream", "Content-Length": str(UP_CHUNK)})
             try:
                 c.request("POST", "/__up", body=body, headers=h)
-                c.getresponse().read()
+                r = c.getresponse()
             except (OSError, http.client.HTTPException):
                 if stop.is_set():
                     break
                 raise
+            _check_response(r)
+            r.read()
+            if body.left:
+                if stop.is_set():
+                    break
+                raise OSError("Nahrávání nebylo dokončeno.")
+            meter.add(UP_CHUNK)
     finally:
         c.close()
 
@@ -206,5 +245,15 @@ def run(progress: Progress | None = None, cancelled: Callable[[], bool] = lambda
         if cancelled():
             res.error = "Zrušeno"
     except (OSError, http.client.HTTPException, ssl.SSLError) as e:
-        res.error = f"Test se nezdařil: {e}"
+        if cancelled():
+            res.error = "Zrušeno"
+        else:
+            if isinstance(e, TimeoutError):
+                detail = "Vypršel časový limit spojení s měřicím serverem."
+            elif isinstance(e, (http.client.HTTPException, ConnectionError)):
+                detail = "Spojení s měřicím serverem bylo přerušeno."
+            else:
+                detail = str(e)
+            partial = "Částečný výsledek. " if res.latency_ms is not None else ""
+            res.error = f"{partial}Test se nezdařil: {detail}"
     return res
