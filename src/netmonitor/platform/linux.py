@@ -5,7 +5,6 @@ import ipaddress
 import logging
 import os
 import re
-import shlex
 import socket
 import struct
 from pathlib import Path
@@ -222,13 +221,23 @@ def autostart_enabled() -> bool:
     return _autostart_file().exists()
 
 
+def _quote_exec_arg(argument: str) -> str:
+    """Zapíše doslovný argument Exec podle Desktop Entry spec (včetně escapování hodnoty)."""
+    quoted = not argument or any(c in " \t\n\r\"'\\><~|&;$*?#()`" for c in argument)
+    argument = argument.replace("%", "%%")
+    if quoted:
+        argument = '"' + "".join("\\" + c if c in '"`$\\' else c for c in argument) + '"'
+    # Parser nejdřív rozbalí string escape sekvence a až potom quoting příkazu.
+    return argument.replace("\\", "\\\\").replace("\n", r"\n").replace("\t", r"\t").replace("\r", r"\r")
+
+
 def set_autostart(enabled: bool, command: list[str]) -> None:
     f = _autostart_file()
     if not enabled:
         f.unlink(missing_ok=True)
         return
     f.parent.mkdir(parents=True, exist_ok=True)
-    exec_line = " ".join(shlex.quote(c) for c in command)
+    exec_line = " ".join(_quote_exec_arg(c) for c in command)
     f.write_text(
         "[Desktop Entry]\nType=Application\nName=NetMonitor\n"
         f"Exec={exec_line}\nIcon=netmonitor\nComment=Síťový monitor\n"
