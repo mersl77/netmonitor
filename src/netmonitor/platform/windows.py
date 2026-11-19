@@ -165,7 +165,9 @@ def adapter_details() -> dict[str, dict]:
 
 def _adapter_details_powershell() -> dict[str, dict]:
     import json
+    # Windows PowerShell 5.1 jinak používá OEM stránku; stdout musí odpovídat dekódování níže.
     out = run_cmd(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                   "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
                    "Get-NetIPConfiguration | ForEach-Object { [pscustomobject]@{"
                    "n=$_.InterfaceAlias; d=$_.InterfaceDescription;"
                    "g=@($_.IPv4DefaultGateway | ForEach-Object NextHop);"
