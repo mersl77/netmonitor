@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QG
                                QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
                                QHeaderView, QAbstractItemView, QToolTip)
 
-from ..core.history import SeriesPoint
+from ..core.history import SeriesPoint, series_segments
 from ..core.notifier import fmt_duration
 from . import theme
 from .controller import Controller
@@ -31,12 +31,11 @@ class Chart(QWidget):
         self.points: list[SeriesPoint] = []
         self.t0 = self.t1 = 0.0
         self.thresholds = (50.0, 150.0)
-        self.bucket = 60.0
         self.setMinimumHeight(260)
         self.setMouseTracking(True)
 
-    def set_data(self, pts: list[SeriesPoint], t0: float, t1: float, bucket: float, thresholds) -> None:
-        self.points, self.t0, self.t1, self.bucket = pts, t0, t1, bucket
+    def set_data(self, pts: list[SeriesPoint], t0: float, t1: float, thresholds) -> None:
+        self.points, self.t0, self.t1 = pts, t0, t1
         self.thresholds = (thresholds.green_max_ms, thresholds.orange_max_ms)
         self.update()
 
@@ -89,45 +88,32 @@ class Chart(QWidget):
         def Y(v):
             return r.bottom() - r.height() * min(v, ymax) / ymax
 
-        bw = max(1.5, r.width() * self.bucket / span)
         # ztrátovost (červeně, výška = % z výšky grafu)
         for pt in self.points:
             if pt.n_fail:
+                bw = max(1.5, r.width() * pt.bucket_s / span)
                 h = r.height() * pt.loss_pct / 100
                 p.fillRect(QRectF(X(pt.ts), r.bottom() - h, bw, h), QColor(255, 77, 94, 110 if pt.loss_pct < 100 else 170))
         # pásmo min–max a průměr; mezery tam, kde nejsou data
-        segments: list[list[SeriesPoint]] = []
-        cur: list[SeriesPoint] = []
-        last_t = None
-        for pt in self.points:
-            if pt.rtt_avg is None or (last_t is not None and pt.ts - last_t > self.bucket * 2.5):
-                if cur:
-                    segments.append(cur)
-                cur = []
-            if pt.rtt_avg is not None:
-                cur.append(pt)
-                last_t = pt.ts
-        if cur:
-            segments.append(cur)
-        for seg in segments:
-            if len(seg) > 1 and self.bucket > 30:
+        for seg in series_segments(self.points):
+            if len(seg) > 1 and any(pt.bucket_s > 30 for pt in seg):
                 band = QPainterPath()
-                band.moveTo(X(seg[0].ts + self.bucket / 2), Y(seg[0].rtt_max))
+                band.moveTo(X(seg[0].center_ts), Y(seg[0].rtt_max))
                 for pt in seg[1:]:
-                    band.lineTo(X(pt.ts + self.bucket / 2), Y(pt.rtt_max))
+                    band.lineTo(X(pt.center_ts), Y(pt.rtt_max))
                 for pt in reversed(seg):
-                    band.lineTo(X(pt.ts + self.bucket / 2), Y(pt.rtt_min))
+                    band.lineTo(X(pt.center_ts), Y(pt.rtt_min))
                 band.closeSubpath()
                 p.fillPath(band, QColor(34, 211, 255, 45))
             line = QPainterPath()
-            line.moveTo(X(seg[0].ts + self.bucket / 2), Y(seg[0].rtt_avg))
+            line.moveTo(X(seg[0].center_ts), Y(seg[0].rtt_avg))
             for pt in seg[1:]:
-                line.lineTo(X(pt.ts + self.bucket / 2), Y(pt.rtt_avg))
+                line.lineTo(X(pt.center_ts), Y(pt.rtt_avg))
             p.setPen(QPen(QColor(64, 224, 255), 1.8))
             p.drawPath(line)
             if len(seg) == 1:
                 p.setBrush(QColor(64, 224, 255))
-                p.drawEllipse(QPointF(X(seg[0].ts + self.bucket / 2), Y(seg[0].rtt_avg)), 2.5, 2.5)
+                p.drawEllipse(QPointF(X(seg[0].center_ts), Y(seg[0].rtt_avg)), 2.5, 2.5)
 
     def mouseMoveEvent(self, e):
         r = self._plot_rect()
@@ -135,8 +121,8 @@ class Chart(QWidget):
             return
         span = max(1.0, self.t1 - self.t0)
         t = self.t0 + (e.position().x() - r.left()) / r.width() * span
-        pt = min(self.points, key=lambda x: abs(x.ts + self.bucket / 2 - t))
-        txt = (f"{time.strftime('%d.%m. %H:%M:%S' if self.bucket < 60 else '%d.%m. %H:%M', time.localtime(pt.ts))}\n"
+        pt = min(self.points, key=lambda x: abs(x.center_ts - t))
+        txt = (f"{time.strftime('%d.%m. %H:%M:%S' if pt.bucket_s < 60 else '%d.%m. %H:%M', time.localtime(pt.ts))}\n"
                f"průměr {fmt_rtt(pt.rtt_avg)}  (min {fmt_rtt(pt.rtt_min)}, max {fmt_rtt(pt.rtt_max)})\n"
                f"OK {pt.n_ok}, chyb {pt.n_fail}, ztrátovost {pt.loss_pct:.0f} %")
         QToolTip.showText(e.globalPosition().toPoint(), txt, self)
@@ -265,20 +251,14 @@ class HistoryDialog(QDialog):
         t0 = now - span
         h = self.ctrl.history
         if bucket == 0:   # 1 h: surové vzorky z paměti (+ doplnění z DB po restartu)
-            raw = h.raw_series(tid, t0)
-            if len(raw) >= 2:
-                pts = [SeriesPoint(ts, rtt, rtt, rtt, 1 if rtt is not None else 0, 0 if rtt is not None else 1)
-                       for ts, rtt, _st in raw]
-                b = max(1.0, (raw[-1][0] - raw[0][0]) / max(1, len(raw) - 1))
-            else:
-                pts, b = h.series(tid, t0, 60), 60.0
+            pts, _raw_bucket, summ = h.hour_data(tid, t0)
         else:
-            pts, b = h.series(tid, t0, bucket), float(bucket)
-        self.chart.set_data(pts, t0, now, b, self.ctrl.cfg.ping.thresholds)
+            pts = h.series(tid, t0, bucket)
+            summ = h.summary(tid, t0)
+        self.chart.set_data(pts, t0, now, self.ctrl.cfg.ping.thresholds)
 
         s = self.ctrl.snapshots.get(tid)
         L = self.stat_labels
-        summ = h.summary(tid, t0)
         L["cur"].setText(fmt_rtt(s.last.rtt_ms) if s and s.last and s.last.ok else
                          (s.last.status.value.upper() if s and s.last else "–"))
         L["min"].setText(fmt_rtt(summ["rtt_min"]))
