@@ -37,6 +37,15 @@ class Notifier:
     def update_config(self, cfg: NotificationConfig) -> None:
         self.cfg = cfg
 
+    def forget_target(self, target_id: str) -> None:
+        """Zahodí alerty i debounce/cooldown stav zneplatněné generace cíle."""
+        key = f"t:{target_id}"
+        self._pending = {k: v for k, v in self._pending.items() if k[0] != key}
+        self._last_sent = {k: v for k, v in self._last_sent.items() if k[0] != key}
+        self._sent_down.discard(key)
+        self._latency_since.pop(target_id, None)
+        self._latency_notified.discard(target_id)
+
     # -- vstupy -----------------------------------------------------------
     def on_target_transition(self, tr: Transition) -> None:
         key = f"t:{tr.target_id}"

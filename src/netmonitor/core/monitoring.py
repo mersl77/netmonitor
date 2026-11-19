@@ -15,7 +15,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Iterable
 
 from .config import PingTarget
@@ -45,6 +45,7 @@ class TargetSnapshot:
     outage_count: int
     last_outage_duration_s: float | None
     consecutive_fail: int
+    generation: int = 0         # identita konfigurace měření, nikoli jen ID/host
 
     @property
     def outage_duration_s(self) -> float | None:
@@ -64,13 +65,15 @@ class Transition:
     duration_s: float | None = None
     status: PingStatus | None = None
     error: str = ""
+    generation: int = 0
 
 
 class TargetStats:
     """Statistiky jednoho cíle. Není thread-safe – volající drží zámek."""
 
-    def __init__(self, target: PingTarget):
+    def __init__(self, target: PingTarget, generation: int = 0):
         self.target = target
+        self.generation = generation
         self.reset()
 
     def reset(self) -> None:
@@ -108,7 +111,8 @@ class TargetStats:
                 self.last_outage_duration_s = dur
                 self.outage_start_ts = None
                 self.up = True
-                return Transition(t.id, t.name, t.host, True, r.ts, start, dur, r.status)
+                return Transition(t.id, t.name, t.host, True, r.ts, start, dur, r.status,
+                                  generation=self.generation)
             self.up = True
             return None
         # selhání
@@ -120,7 +124,8 @@ class TargetStats:
             self.up = False
             self.outage_start_ts = self.first_fail_ts
             self.outage_count += 1
-            return Transition(t.id, t.name, t.host, False, r.ts, self.outage_start_ts, None, r.status, r.error)
+            return Transition(t.id, t.name, t.host, False, r.ts, self.outage_start_ts, None, r.status, r.error,
+                              self.generation)
         return None
 
     def snapshot(self) -> TargetSnapshot:
@@ -137,6 +142,7 @@ class TargetStats:
             last_success_ts=self.last_success_ts, outage_start_ts=self.outage_start_ts,
             outage_count=self.outage_count, last_outage_duration_s=self.last_outage_duration_s,
             consecutive_fail=self.consecutive_fail,
+            generation=self.generation,
         )
 
 
@@ -167,6 +173,7 @@ class MonitorEngine:
         self._heap: list[tuple[float, int, str]] = []
         self._due: dict[str, float] = {}
         self._seq = 0
+        self._generation = 0
         self._inflight: set[str] = set()
         self._executor: ThreadPoolExecutor | None = None
         self._thread: threading.Thread | None = None
@@ -176,7 +183,8 @@ class MonitorEngine:
     # -- konfigurace --------------------------------------------------------
     def set_targets(self, targets: Iterable[PingTarget]) -> None:
         with self._lock:
-            new = {t.id: t for t in targets if t.enabled and not getattr(t, 'is_section', False)}
+            # Oddělená kopie zachytí i změnu původního mutable PingTarget na místě.
+            new = {t.id: replace(t) for t in targets if t.enabled and not t.is_section}
             for tid in list(self._targets):
                 if tid not in new:
                     self._targets.pop(tid)
@@ -186,7 +194,9 @@ class MonitorEngine:
             for i, (tid, t) in enumerate(new.items()):
                 old = self._targets.get(tid)
                 if old is None or old.host != t.host:
-                    self._stats[tid] = TargetStats(t)
+                    # Monotónní čítač se nemaže s cílem: remove/readd nesmí vrátit tutéž generaci.
+                    self._generation += 1
+                    self._stats[tid] = TargetStats(t, self._generation)
                     self._schedule(tid, now + 0.05 * i)   # mírné rozprostření startu
                 else:
                     self._stats[tid].target = t
@@ -229,6 +239,12 @@ class MonitorEngine:
         with self._lock:
             s = self._stats.get(tid)
             return s.snapshot() if s else None
+
+    def is_current(self, tid: str, generation: int) -> bool:
+        """Ověří platnost výsledku i po jeho queued doručení mimo engine."""
+        with self._lock:
+            s = self._stats.get(tid)
+            return s is not None and s.generation == generation
 
     def snapshots(self) -> dict[str, TargetSnapshot]:
         with self._lock:
@@ -303,20 +319,20 @@ class MonitorEngine:
                     self._inflight.add(tid)
                     try:
                         assert self._executor is not None
-                        self._executor.submit(self._probe, t)
+                        self._executor.submit(self._probe, t, self._stats[tid].generation)
                     except RuntimeError:      # executor už se vypíná
                         self._inflight.discard(tid)
                         return
                 self._cond.wait(timeout=max(0.01, wait))
 
-    def _probe(self, t: PingTarget) -> None:
+    def _probe(self, t: PingTarget, generation: int) -> None:
         try:
             if self._stop.is_set():
                 return
             r = ping_host(t.host, t.timeout_s, self.pinger, self.resolver)
             with self._lock:
                 st = self._stats.get(t.id)
-                if st is None or st.target.host != t.host:
+                if st is None or st.generation != generation:
                     return          # cíl mezitím odebrán/změněn
                 tr = st.add(r)
                 snap = st.snapshot()

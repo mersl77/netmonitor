@@ -116,8 +116,8 @@ class WanState:
         except OSError as e:
             log.warning("Nelze uložit stav WAN: %s", e)
 
-    def update(self, r: WanResult) -> bool:
-        """Vrátí True, pokud se WAN IP změnila (oproti známé předchozí)."""
+    def update(self, r: WanResult, *, persist: bool = True) -> bool:
+        """Vrátí True při změně známé IP; persist=False nechá uložení na volajícím."""
         self.last_check = r.ts
         self.last_error = r.error
         if not r.ip:
@@ -127,7 +127,8 @@ class WanState:
             self.previous = self.current
             self.current = r.ip
             self.changed_at = r.ts
-            self.save()
+            if persist:
+                self.save()
         return changed
 
     def isp_for(self, ip: str, provider: str, max_age_s: float, fetch: Fetcher = http_get) -> str | None:
