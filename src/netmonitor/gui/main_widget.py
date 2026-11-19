@@ -17,6 +17,7 @@ from .i18n import tr
 from .network_panel import NetworkPanel
 from .ping_panel import PingPanel
 from .widgets import GlowTitle
+from .wol_dialog import WolDevicesDialog, add_wol_menu
 
 log = logging.getLogger(__name__)
 BASE_W, BASE_H = 600, 850
@@ -75,6 +76,7 @@ class MainWidget(QWidget):
     def __init__(self, ctrl: Controller):
         super().__init__(None)
         self.ctrl = ctrl
+        self._wol_devices_dialog: WolDevicesDialog | None = None
         self.setWindowTitle("NetMonitor")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
@@ -448,6 +450,7 @@ class MainWidget(QWidget):
         m.addAction(tr("Nastavení…"), self.open_settings.emit)
         m.addAction(tr("Historie…"), lambda: self.open_history.emit(""))
         m.addAction(tr("Test rychlosti internetu…"), self.open_speedtest.emit)
+        add_wol_menu(m, self.ctrl, self.open_wol_devices)
         act_if = self.ctrl.network.active if self.ctrl.network else None
         m.addAction(tr("Nastavit IP adresu…"), lambda: self.open_ipconfig.emit(act_if.name if act_if else ""))
         m.addSeparator()
@@ -514,6 +517,13 @@ class MainWidget(QWidget):
             self.ctrl.switch_profile(profile_id)
         except (OSError, ValueError, KeyError) as exc:
             log.error("Profil nelze přepnout: %s", exc)
+
+    def open_wol_devices(self) -> None:
+        if self._wol_devices_dialog is None:
+            self._wol_devices_dialog = WolDevicesDialog(self.ctrl, self)
+        self._wol_devices_dialog.show()
+        self._wol_devices_dialog.raise_()
+        self._wol_devices_dialog.activateWindow()
 
     def _set_appearance(self, **kw) -> None:
         cfg = self.ctrl.cfg.copy()
