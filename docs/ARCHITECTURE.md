@@ -6,7 +6,7 @@ src/netmonitor/
 ├── core/                   čistý Python BEZ Qt – plně testovatelné
 │   ├── config.py           dataclassy konfigurace, validace, JSON (atomický zápis), import/export, migrace
 │   ├── ping_engine.py      ICMP: Windows IcmpSendEcho / ICMP socket / systémový ping; DNS resolver s cache
-│   ├── monitoring.py       plánovač (monotonic, fixed-rate), ThreadPool, statistiky, přechody UP/DOWN
+│   ├── monitoring.py       plánovač (monotonic, fixed-rate), daemon pool, statistiky, přechody UP/DOWN
 │   ├── connection_status.py vyhodnocení ONLINE/DEGRADED/OFFLINE/UNKNOWN po vrstvách
 │   ├── network_info.py     aktivní rozhraní (výchozí trasa), LAN IP, brána, rychlost linky, Wi-Fi, DNS
 │   ├── wan_info.py         WAN IPv4 (4 poskytovatelé s fallbackem), ISP (ipinfo / RIPEstat), cache, změny
@@ -42,19 +42,34 @@ src/netmonitor/
 ```
  Qt hlavní vlákno (UI)  ◄── queued Signal ──┐
                                             │
- ping-scheduler (1 vlákno) ── submit ──► ThreadPool "ping-*" (max_concurrent, výchozí 16)
-        │  heap (due, target)                 │ ping_host(): resolver → pinger (blokuje max. timeout)
+ ping-scheduler (1 vlákno) ── submit ──► DaemonPool "ping_*" (max_concurrent, výchozí 16)
+        │  heap (due, target)                 │ ping_host(): resolver → pinger (DNS nemá deadline)
         │  monotonic clock                    ▼
         │                               TargetStats.add() pod zámkem → snapshot → callback
- ThreadPool "bg-*" (3)  ← síťové info (každých 5 s), WAN/ISP (5 min), flush DB (60 s), zápis konfigurace
+ DaemonPool "bg_*" (3)  ← síťové info (každých 5 s), WAN/ISP (5 min), flush DB (60 s)
 ```
 
-- **Žádná síťová ani disková operace na hlavním vlákně.**
+- **Síťové a DB I/O controlleru za běhu probíhá v pozadí.** Výjimkou je zápis konfigurace (viz níže).
 - **Žádné překrývání** požadavků na stejný cíl (`_inflight`), žádná dávka "dohánění" po zpoždění.
 - **Uspání/probuzení**: skok wall-clock vs. monotonic → vymazání DNS cache, přeplánování, obnovení WAN/sítě.
 - **Změna sítě** (rozhraní/IP/brána/DNS/SSID) → totéž + přepnutí sondy brány.
-- **Ukončení**: zastavení časovačů → `engine.stop()` (join plánovače, `executor.shutdown(wait, cancel_futures)`)
-  → flush historie → zavření DB. Systémový ping používá `subprocess.run(timeout)` → žádné zombie procesy.
+- **Konfigurace**: debounce 600 ms, revize se označují čítačem. Zápis `config.json` a aktivního profilu je
+  synchronní v hlavním vlákně (malý atomický JSON, `fsync` + `os.replace`), aby přepnutí profilu nepředběhl
+  starší zápis. Při chybě zůstane revize neuložená a zapíše se při dalším uložení, nejpozději při ukončení.
+- **Ukončení**: odmítnutí nových úloh, skrytí widgetu a zastavení časovačů → synchronní zápis poslední požadované
+  revize konfigurace → zrušení čekajících úloh v pozadí → zahájení úklidu historie → `engine.stop(timeout)`.
+  Historie tak flushuje souběžně s čekáním na visící síťové dotazy. Join scheduleru, aktuálního i vyřazených
+  ping poolů a úklidu historie sdílí rozpočet 2 s (cíl celého ukončení ≤ 3 s). Scheduler při každém submitu
+  vybírá aktuální pool pod zámkem, takže živá změna limitu souběhu nepřeruší plánování.
+  Workery jsou daemon a nemají atexit join standardního `ThreadPoolExecutor`, takže ani visící resolver
+  nezadrží konec Pythonu. Hotové callbacky se ve workerech nezadržují. Log obsahuje „Ukončuji…“ a trvání v sekundách.
+  Historie se uzavře po dokončení již běžících DB úloh; při překročení rozpočtu se zaloguje varování a úklid
+  pokračuje jako daemon. Při konci procesu se v takovém případě nemusí uložit poslední agregáty historie.
+- **Výjimky z časového cíle**: již běžící `apply_ip` se nepřerušuje uprostřed sekvence. Shutdown zaloguje čekání
+  a počká na konec této jediné operace podle existujících platformních timeoutů (včetně autorizace).
+  Výjimka při čekání se zaloguje a nezabrání zastavení monitoringu ani úklidu historie.
+  Dosud nezačatá změna IP se zruší. Ani synchronní zápis konfigurace nemůže garantovat limit při visícím disku;
+  chyba zápisu se zaloguje a ukončení pokračuje. Systémový ping používá `subprocess.run(timeout)`.
 
 ## Vyhodnocení stavu připojení
 
