@@ -141,12 +141,12 @@ def test_sections_in_widget_and_settings(ctrl):
 
 
 def test_ipconfig_dialog_prefill_and_validation(ctrl, monkeypatch):
-    from netmonitor.core.network_info import InterfaceInfo, NetworkSnapshot
+    from netmonitor.core.network_info import AdapterConfiguration, InterfaceInfo, NetworkSnapshot
     from netmonitor.gui.ipconfig_dialog import IpConfigDialog
     import netmonitor.platform as plat
     a = InterfaceInfo(name="Ethernet 10Gb", display_name="Ethernet 10Gb", kind="ethernet", is_up=True,
-                      ipv4=("192.168.14.112",), ipv4_masks=("255.255.255.0",), gateway="192.168.14.1",
-                      dns=("192.168.14.2", "192.168.14.3"))
+                      ipv4=("198.51.100.112",), ipv4_masks=("255.255.255.0",), gateway="198.51.100.1",
+                      dns=("198.51.100.2", "198.51.100.3"))
     ctrl.network = NetworkSnapshot(active=a, interfaces=(a,), has_default_route=True, default_iface=a.name)
 
     class FakePlat:
@@ -161,23 +161,29 @@ def test_ipconfig_dialog_prefill_and_validation(ctrl, monkeypatch):
             FakePlat.applied.append(s)
             return True, "ok"
     monkeypatch.setattr(plat, "current", lambda: FakePlat)
+    monkeypatch.setattr(ctrl.net_provider, "ip_configuration", lambda iface: AdapterConfiguration(
+        iface, a.ipv4[0], a.ipv4_masks[0], a.gateway, a.dns, True, True))
     d = IpConfigDialog(ctrl)
     d.open_for("Ethernet 10Gb")
-    assert d.rb_dhcp.isChecked() and d.ip.text() == "192.168.14.112" and d.mask.text() == "255.255.255.0"
+    deadline = time.monotonic() + 3
+    while d._busy and time.monotonic() < deadline:
+        pump(0.02)
+    assert not d._busy, "Načtení konfigurace karty nedoběhlo"
+    assert d.rb_dhcp.isChecked() and d.ip.text() == "198.51.100.112" and d.netmask.text() == "255.255.255.0"
     assert "DHCP" in d.current.text()
     d.rb_static.setChecked(True)
     d.rb_dns_static.setChecked(True)
-    d.ip.setText("192.168.14.300")
+    d.ip.setText("198.51.100.300")
     assert not d.btn_apply.isEnabled()
-    d.ip.setText("192.168.14.112")
+    d.ip.setText("198.51.100.112")
     assert d.btn_apply.isEnabled()
     s = d.settings()
-    assert (s.dhcp, s.ip, s.prefix, s.gateway, s.dns_list) == (False, "192.168.14.112", 24, "192.168.14.1",
-                                                              ["192.168.14.2", "192.168.14.3"])
+    assert (s.dhcp, s.ip, s.prefix, s.gateway, s.dns_list) == (False, "198.51.100.112", 24, "198.51.100.1",
+                                                              ["198.51.100.2", "198.51.100.3"])
     results = []
     ctrl.apply_ip(s, results.append)
     pump(0.5)
-    assert results == [(True, "ok")] and FakePlat.applied[0].ip == "192.168.14.112"
+    assert results == [(True, "ok")] and FakePlat.applied[0].ip == "198.51.100.112"
     # profil
     monkeypatch.setattr("netmonitor.gui.ipconfig_dialog.QInputDialog.getText", lambda *a, **k: ("Kancelář", True))
     d._save_profile()

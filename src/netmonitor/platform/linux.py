@@ -254,6 +254,44 @@ def dhcp_enabled(iface: str) -> bool | None:
     return {"auto": True, "manual": False}.get(m)
 
 
+def ip_config_details(iface: str) -> dict:
+    """Pouze údaje této karty z NM; systémový resolv.conf sem nepatří."""
+    conn = _nm_connection(iface)
+    if not conn or conn == "--":
+        return {}
+    fields = "ipv4.method,ipv4.dns,ipv4.ignore-auto-dns"
+    config = run_cmd(["nmcli", "-t", "-f", fields, "connection", "show", conn], timeout=3)
+    runtime = run_cmd(["nmcli", "-t", "-f", "IP4.GATEWAY,IP4.DNS", "device", "show", iface], timeout=3)
+    state: dict = {}
+    cfg = dict(line.split(":", 1) for line in (config or "").splitlines() if ":" in line)
+    method = cfg.get("ipv4.method", "")
+    state["dhcp"] = {"auto": True, "manual": False}.get(method)
+    if "ipv4.dns" in cfg and "ipv4.ignore-auto-dns" in cfg:
+        custom = cfg["ipv4.dns"] not in ("", "--")
+        ignore = cfg["ipv4.ignore-auto-dns"]
+        # Smíšené automatické a ruční DNS editor neumí zachovat beze změny.
+        if ignore == "yes" or (method == "manual" and custom):
+            state["dns_dhcp"] = False
+        elif ignore == "no" and not custom:
+            state["dns_dhcp"] = True
+    if runtime:
+        dns = []
+        for line in runtime.splitlines():
+            key, sep, value = line.partition(":")
+            value = value.replace("\\:", ":").strip()
+            if sep and key == "IP4.GATEWAY":
+                state["gateway"] = "" if value == "--" else value
+            elif sep and key.startswith("IP4.DNS["):
+                if _is_ip(value):
+                    dns.append(value)
+                elif value not in ("", "--"):
+                    return state
+        # Úspěšný device show s bránou obsahuje všechny DNS, i když žádné nemá.
+        if "gateway" in state:
+            state["dns"] = tuple(dns)
+    return state
+
+
 def _run(args: list[str], timeout: float = 30) -> tuple[int, str]:
     import subprocess
     try:

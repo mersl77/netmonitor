@@ -107,6 +107,38 @@ def dhcp_enabled(iface: str) -> bool | None:
     return None
 
 
+def ip_config_details(iface: str) -> dict:
+    """Pouze údaje vybrané služby; globální resolver není DNS jiné karty."""
+    svc = _service_for(iface)
+    if not svc:
+        return {}
+    out = run_cmd(["networksetup", "-getinfo", svc], timeout=3) or ""
+    state: dict = {"dhcp": True if "DHCP Configuration" in out else
+                   False if "Manual Configuration" in out else None}
+    gateway = re.search(r"^Router:\s*(.*?)$", out, re.M)
+    if gateway:
+        value = gateway.group(1).strip()
+        state["gateway"] = "" if value in ("none", "0.0.0.0", "(null)") else value
+    dns_out = run_cmd(["networksetup", "-getdnsservers", svc], timeout=3)
+    if dns_out and "There aren't any DNS Servers set on" in dns_out:
+        state["dns_dhcp"] = True
+        scoped = (run_cmd(["scutil", "--dns"], timeout=3) or "").partition(
+            "DNS configuration (for scoped queries)")[2]
+        for sec in re.split(r"\n(?=resolver #\d+)", scoped):
+            if re.search(rf"if_index\s*:\s*\d+\s*\({re.escape(iface)}\)", sec):
+                state["dns"] = tuple(re.findall(r"nameserver\[\d+\]\s*:\s*(\S+)", sec))
+                break
+    elif dns_out:
+        from ipaddress import ip_address
+        try:
+            servers = [ip_address(a.strip()) for a in dns_out.splitlines() if a.strip()]
+            state["dns"] = tuple(str(a) for a in servers)
+            state["dns_dhcp"] = False
+        except ValueError:
+            pass
+    return state
+
+
 def apply_ip(s) -> tuple[bool, str]:
     import subprocess
     from ..core.ipconfig import applescript_admin, networksetup_args

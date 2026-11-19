@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import psutil
 
 from .. import platform as plat
+from .ipconfig import parse_mask
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,48 @@ class NetworkSnapshot:
         return (a.name, a.ipv4, a.gateway, a.dns, a.ssid, self.has_default_route)
 
 
+@dataclass(frozen=True)
+class AdapterConfiguration:
+    """Stav pro editor. None = nezjištěno, prázdný řetězec/tuple = ověřená absence."""
+    iface: str
+    ip: str | None = None
+    mask: str | None = None
+    gateway: str | None = None
+    dns: tuple[str, ...] | None = None
+    dhcp: bool | None = None
+    dns_dhcp: bool | None = None
+    ipv4: tuple[str, ...] = ()
+
+    @property
+    def apply_blockers(self) -> list[str]:
+        errors = []
+        if len(self.ipv4) > 1:
+            errors.append("karta má více IPv4 adres – změnu proveďte v nastavení systému")
+        if any(":" in server for server in self.dns or ()):
+            errors.append("Karta má IPv6 DNS – změnu proveďte v nastavení systému")
+        return errors
+
+    @property
+    def unknown(self) -> list[str]:
+        values = (("IP", self.ip), ("maska", self.mask), ("brána", self.gateway), ("DNS", self.dns),
+                  ("režim IP", self.dhcp), ("režim DNS", self.dns_dhcp))
+        return [label for label, value in values if value is None]
+
+    def summary(self) -> str:
+        prefix = "nezjištěno" if self.mask is None else "–"
+        if self.mask:
+            try:
+                prefix = f"/{parse_mask(self.mask)}"
+            except ValueError:
+                prefix = "nezjištěno"
+        mode = {True: "DHCP", False: "pevná IP", None: "nezjištěno"}[self.dhcp]
+        dns_mode = {True: "automaticky", False: "ručně", None: "nezjištěno"}[self.dns_dhcp]
+        dns = "nezjištěno" if self.dns is None else ", ".join(self.dns) or "žádné"
+        return (f"IP: {self.ip if self.ip is not None else 'nezjištěno'} ({mode}), prefix {prefix}\n"
+                f"Brána: {(self.gateway or 'žádná') if self.gateway is not None else 'nezjištěno'}\n"
+                f"DNS: {dns} ({dns_mode})")
+
+
 def route_source_ip(family: int = socket.AF_INET) -> str | None:
     probe = ("192.0.2.1", 9) if family == socket.AF_INET else ("2001:db8::1", 9, 0, 0)
     try:
@@ -104,6 +147,25 @@ class NetworkInfoProvider:
     def list_interfaces(self) -> list[str]:
         return sorted(_psutil_interfaces())
 
+    def ip_configuration(self, iface: str) -> AdapterConfiguration:
+        """Čerstvé údaje vybrané karty bez globálních fallbacků DNS/brány; volat na pozadí."""
+        try:
+            addresses = _psutil_interfaces().get(iface)
+            if addresses is None:
+                return AdapterConfiguration(iface)
+            state = self.p.ip_config_details(iface)
+            ips = addresses["ipv4"]
+            masks = addresses.get("ipv4_masks", ())
+            mask = (masks[0] or None) if ips and masks else (None if ips else "")
+            if mask:
+                parse_mask(mask)
+            return AdapterConfiguration(iface, ips[0] if ips else "", mask,
+                                        state.get("gateway"), state.get("dns"), state.get("dhcp"),
+                                        state.get("dns_dhcp"), ipv4=tuple(ips))
+        except Exception:  # noqa: BLE001
+            log.debug("Detaily IP karty nelze načíst", exc_info=True)
+            return AdapterConfiguration(iface)
+
     def snapshot(self, preferred_iface: str | None = None, with_wifi: bool = True) -> NetworkSnapshot:
         try:
             return self._snapshot(preferred_iface, with_wifi)
@@ -129,6 +191,7 @@ class NetworkInfoProvider:
             det = details.get(n, {})
             infos.append(InterfaceInfo(name=n, display_name=det.get("display_name", n),
                                        kind=det.get("kind", "other"), is_up=d["is_up"], ipv4=d["ipv4"],
+                                       ipv4_masks=d.get("ipv4_masks", ()),
                                        ipv6=d["ipv6"], mac=d["mac"], speed_mbps=d["speed"]))
         if not name:
             return NetworkSnapshot(active=None, interfaces=tuple(infos), has_default_route=has_route,
