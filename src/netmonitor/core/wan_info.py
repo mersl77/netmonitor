@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import __version__
+from ..utils.local_json import quarantine_json, read_json_object
 from ..utils.validation import is_ipv4
 
 log = logging.getLogger(__name__)
@@ -90,22 +91,39 @@ class WanState:
         self.last_check: float | None = None
         self.last_error: str = ""
         self.isp_cache: dict[str, tuple[str, float]] = {}
+        self._can_save = True
         self._load()
 
     def _load(self) -> None:
-        if not self.state_file or not self.state_file.exists():
+        if not self.state_file:
             return
         try:
-            d = json.loads(self.state_file.read_text(encoding="utf-8"))
+            d = read_json_object(self.state_file)
+            for key in ("current", "previous"):
+                if d.get(key) is not None and not isinstance(d[key], str):
+                    raise ValueError(f"Neplatný typ WAN {key}")
+            changed_at = d.get("changed_at")
+            if changed_at is not None and not _valid_timestamp(changed_at):
+                raise ValueError("Neplatný čas změny WAN")
+            cache = d.get("isp_cache", {})
+            if not isinstance(cache, dict):
+                raise ValueError("ISP cache musí být objekt")
+            for entry in cache.values():
+                if (not isinstance(entry, list) or len(entry) != 2
+                        or not isinstance(entry[0], str) or not _valid_timestamp(entry[1])):
+                    raise ValueError("Neplatný záznam ISP cache")
+            # Stav měníme až po ověření celé cache, aby neunikl částečný výsledek.
             self.current = d.get("current")
             self.previous = d.get("previous")
-            self.changed_at = d.get("changed_at")
-            self.isp_cache = {k: (v[0], v[1]) for k, v in (d.get("isp_cache") or {}).items()}
-        except (OSError, ValueError, TypeError, IndexError):
+            self.changed_at = changed_at
+            self.isp_cache = {k: (v[0], v[1]) for k, v in cache.items()}
+        except FileNotFoundError:
             pass
+        except (OSError, ValueError, TypeError) as e:
+            self._can_save = quarantine_json(self.state_file, e)
 
     def save(self) -> None:
-        if not self.state_file:
+        if not self.state_file or not self._can_save:
             return
         from .config import atomic_write_json
         try:
@@ -145,3 +163,7 @@ class WanState:
             except Exception as e:  # noqa: BLE001
                 log.info("ISP lookup přes %s selhal: %s", p, e)
         return hit[0] if hit else None
+
+
+def _valid_timestamp(value) -> bool:
+    return type(value) in (int, float) and 0 <= value < float("inf")
