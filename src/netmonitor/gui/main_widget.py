@@ -429,50 +429,49 @@ class MainWidget(QWidget):
 
     # ------------------------------------------------------------------ menu (sdílené s tray)
     def build_menu(self, parent=None, for_tray: bool = False) -> QMenu:
-        cfg = self.ctrl.cfg
-        a = cfg.appearance
         m = QMenu(parent)
         m.setStyleSheet(theme.DIALOG_QSS)
         if for_tray:
-            act = m.addAction(tr("Zobrazit widget") if not self.isVisible() else tr("Skrýt do oznamovací oblasti"))
+            act = m.addAction("")
+            act.setData(("visibility",))
             act.triggered.connect(self.toggle_visible)
             m.addSeparator()
-        if self.update_version:
-            up = m.addAction(f"⬆  Aktualizovat na verzi {self.update_version}…")
-            up.triggered.connect(self.open_update.emit)
-            f = up.font()
-            f.setBold(True)
-            up.setFont(f)
-            m.addSeparator()
+        # Aktualizaci jen skrýváme; přidání/odebrání by změnilo exportovaná ID.
+        up = m.addAction("")
+        up.setData(("update",))
+        up.triggered.connect(self.open_update.emit)
+        f = up.font()
+        f.setBold(True)
+        up.setFont(f)
+        m.addSeparator().setData(("update_separator",))
         self._add_profile_menu(m)
         m.addAction(tr("Nastavení…"), self.open_settings.emit)
         m.addAction(tr("Historie…"), lambda: self.open_history.emit(""))
         m.addAction(tr("Test rychlosti internetu…"), self.open_speedtest.emit)
-        act_if = self.ctrl.network.active if self.ctrl.network else None
-        m.addAction(tr("Nastavit IP adresu…"), lambda: self.open_ipconfig.emit(act_if.name if act_if else ""))
+        m.addAction(tr("Nastavit IP adresu…"), self._open_current_ipconfig)
         m.addSeparator()
         mode = m.addMenu(tr("Režim zobrazení"))
         grp = QActionGroup(mode)
         for key, label in ((MODE_DESKTOP, tr("Na ploše (pod okny)")), (MODE_ONTOP, tr("Vždy navrchu"))):
-            act = QAction(label, mode, checkable=True, checked=a.mode == key)
+            act = QAction(label, mode, checkable=True)
+            act.setData(("mode", key))
             act.triggered.connect(lambda _=False, k=key: self._set_appearance(mode=k))
             grp.addAction(act)
             mode.addAction(act)
         lock = m.addAction(tr("Uzamknout pozici"))
         lock.setCheckable(True)
-        lock.setChecked(a.locked)
+        lock.setData(("locked",))
         lock.triggered.connect(lambda v: self._set_appearance(locked=v))
         ct = m.addAction(tr("Ignorovat myš (click-through)"))
         ct.setCheckable(True)
-        ct.setChecked(a.click_through)
-        ct.setEnabled(for_tray or not a.click_through)
+        ct.setData(("click_through", for_tray))
         ct.triggered.connect(lambda v: self._set_click_through(v))
         op = m.addMenu(tr("Průhlednost pozadí"))
         for pct in (0, 20, 40, 60, 80, 100):
             label = f"{pct} %" + ("  (neprůhledné)" if pct == 0 else "  (jen text)" if pct == 100 else "")
             act = op.addAction(label)
             act.setCheckable(True)
-            act.setChecked(abs((1 - a.glass_alpha) - pct / 100) < 0.01)
+            act.setData(("glass_alpha", 1 - pct / 100))
             act.triggered.connect(lambda _=False, g=1 - pct / 100: self._set_appearance(glass_alpha=g))
         sz = m.addMenu(tr("Velikost"))
         for label, (w, h) in ((tr("Mini (300 × 430)"), (300, 430)), (tr("Malý (380 × 540)"), (380, 540)),
@@ -486,34 +485,102 @@ class MainWidget(QWidget):
         m.addSeparator()
         m.addAction(tr("O aplikaci…"), self.open_about.emit)
         m.addAction(tr("Ukončit"), self.quit_requested.emit)
+        self.update_menu(m)
         return m
 
     def _add_profile_menu(self, m: QMenu) -> None:
-        """Rychlé přepnutí profilu (Soukromý / Firemní…) z widgetu i z ikony v liště."""
-        store = self.ctrl.profile_store
-        if store is None:
+        """Rychlé přepnutí profilu (Soukromý / Firemní…) z widgetu i z ikony v liště.
+
+        Podmenu vzniká jednou a update_menu ho jen aktualizuje (viz L14 – tray menu se nevyměňuje).
+        """
+        if self.ctrl.profile_store is None:
             return
+        sub = m.addMenu(tr("Profil"))
+        sub.menuAction().setData(("profiles",))
+        sub.setProperty("profile_ids", "")
+        m.addSeparator().setData(("profiles_separator",))
+
+    def _update_profile_menu(self, act: QAction, menu: QMenu) -> None:
+        """Název podmenu a zaškrtnutí aktivního profilu; položky se znovu vytvoří jen při změně seznamu."""
+        store, sub = self.ctrl.profile_store, act.menu()
+        if store is None or not isinstance(sub, QMenu):
+            return
+        sep = next((a for a in menu.actions() if (a.data() or ("",))[0] == "profiles_separator"), None)
         try:
             profiles, active = store.list_profiles(), store.active_id()
         except (OSError, ValueError, KeyError):
+            act.setVisible(False)
+            if sep is not None:
+                sep.setVisible(False)
             return
-        current = next((p["name"] for p in profiles if p["id"] == active), "")
-        sub = m.addMenu(f"{tr('Profil')}: {current}")
-        grp = QActionGroup(sub)
-        for p in profiles:
-            act = QAction(p["name"], sub, checkable=True, checked=p["id"] == active)
-            act.triggered.connect(lambda _=False, pid=p["id"]: self._switch_profile(pid))
-            grp.addAction(act)
-            sub.addAction(act)
-        sub.addSeparator()
-        sub.addAction(tr("Spravovat profily…"), self.open_settings.emit)
-        m.addSeparator()
+        act.setVisible(True)
+        if sep is not None:
+            sep.setVisible(True)
+        items = [(p["id"], p["name"]) for p in profiles]
+        current = next((name for pid, name in items if pid == active), "")
+        act.setText(f"{tr('Profil')}: {current}")
+        key = repr(items)
+        if sub.property("profile_ids") != key:
+            # Nový/přejmenovaný/smazaný profil: nová ID dostanou jen položky tohoto podmenu.
+            for old in sub.actions():
+                sub.removeAction(old)
+                old.deleteLater()
+            for old_grp in sub.findChildren(QActionGroup):
+                old_grp.deleteLater()
+            grp = QActionGroup(sub)
+            for pid, name in items:
+                pa = QAction(name, sub, checkable=True)
+                pa.setData(("profile", pid))
+                pa.triggered.connect(lambda _=False, pid=pid: self._switch_profile(pid))
+                grp.addAction(pa)
+                sub.addAction(pa)
+            sub.addSeparator()
+            sub.addAction(tr("Spravovat profily…"), self.open_settings.emit)
+            sub.setProperty("profile_ids", key)
+        for pa in sub.actions():
+            data = pa.data()
+            if data and data[0] == "profile":
+                pa.setChecked(data[1] == active)
 
     def _switch_profile(self, profile_id: str) -> None:
         try:
             self.ctrl.switch_profile(profile_id)
         except (OSError, ValueError, KeyError) as exc:
             log.error("Profil nelze přepnout: %s", exc)
+
+    def update_menu(self, menu: QMenu) -> None:
+        """Synchronizuje stav sdíleného menu bez výměny QMenu nebo QAction."""
+        a = self.ctrl.cfg.appearance
+        for act in menu.actions():
+            submenu = act.menu()
+            data = act.data()
+            if isinstance(submenu, QMenu) and not (data and data[0] == "profiles"):
+                self.update_menu(submenu)
+            if not data:
+                continue
+            key = data[0]
+            if key == "visibility":
+                act.setText(tr("Skrýt do oznamovací oblasti") if self.isVisible() else tr("Zobrazit widget"))
+            elif key == "update":
+                act.setText(f"⬆  Aktualizovat na verzi {self.update_version}…" if self.update_version else "")
+                act.setVisible(bool(self.update_version))
+            elif key == "update_separator":
+                act.setVisible(bool(self.update_version))
+            elif key == "mode":
+                act.setChecked(a.mode == data[1])
+            elif key == "locked":
+                act.setChecked(a.locked)
+            elif key == "click_through":
+                act.setChecked(a.click_through)
+                act.setEnabled(data[1] or not a.click_through)
+            elif key == "glass_alpha":
+                act.setChecked(abs(a.glass_alpha - data[1]) < 0.01)
+            elif key == "profiles":
+                self._update_profile_menu(act, menu)
+
+    def _open_current_ipconfig(self) -> None:
+        act_if = self.ctrl.network.active if self.ctrl.network else None
+        self.open_ipconfig.emit(act_if.name if act_if else "")
 
     def _set_appearance(self, **kw) -> None:
         cfg = self.ctrl.cfg.copy()
