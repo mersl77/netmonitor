@@ -15,14 +15,16 @@ import logging
 import os
 import signal
 import sys
+import traceback
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 
 from . import APP_NAME, __version__
 from .core import config as cfgmod
-from .utils.logging_setup import setup_logging
-from .utils.paths import data_dir, ensure_dirs
+from .utils.crash_notice import mark_clean_exit, mark_seen, pending_crash
+from .utils.logging_setup import setup_logging, write_crash_traceback
+from .utils.paths import data_dir, ensure_dirs, log_dir
 
 log = logging.getLogger("netmonitor")
 
@@ -112,9 +114,48 @@ def _utf8_redirected_streams() -> None:
 
 
 def main(argv=None) -> int:
+    try:
+        return _main(argv)
+    except Exception:
+        # Výjimky Qt slotů nemusí ukončit aplikaci, proto nepoužíváme sys.excepthook.
+        write_crash_traceback(traceback.format_exc())
+        raise
+
+
+def _show_crash_notice(size: int):
+    """Zobrazí nemodální oznámení; volající drží dialog po dobu běhu aplikace."""
+    from PySide6.QtCore import Qt, QUrl
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtWidgets import QMessageBox
+
+    from .gui.i18n import tr
+
+    path = log_dir() / "crash.log"
+    dialog = QMessageBox()
+    dialog.setWindowTitle(APP_NAME)
+    dialog.setIcon(QMessageBox.Icon.Warning)
+    dialog.setTextFormat(Qt.TextFormat.PlainText)
+    dialog.setText(tr("Minule NetMonitor spadl. Otevřít log?"))
+    dialog.setInformativeText(str(path))
+    open_button = dialog.addButton(tr("Otevřít log"), QMessageBox.ButtonRole.ActionRole)
+    close_button = dialog.addButton(tr("Zavřít"), QMessageBox.ButtonRole.RejectRole)
+    dialog.setEscapeButton(close_button)
+    dialog.buttonClicked.connect(lambda button: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+                                 if button == open_button else None)
+    dialog.setModal(False)
+    dialog.show()
+    # Potvrzujeme už zobrazení, aby ani pád Qt při zavírání nezopakoval staré oznámení.
+    # Velikost je ze začátku startu: případný pád aktuálního běhu zůstane nepotvrzený.
+    mark_seen(size)
+    return dialog
+
+
+def _main(argv=None) -> int:
     _utf8_redirected_streams()
     args = parse_args(argv)
     ensure_dirs()
+    # Po vytvoření adresářů, ale před faulthandler a Qt, zachytíme velikost logu minulého běhu.
+    crash_size = pending_crash()
     setup_logging(args.debug)
     log.info("%s %s start (%s, Python %s)", APP_NAME, __version__, sys.platform, sys.version.split()[0])
     cfg_path = args.config or cfgmod.default_config_path()
@@ -309,6 +350,10 @@ def main(argv=None) -> int:
     widget.open_history.connect(history)
     widget.quit_requested.connect(app.quit)
     app.aboutToQuit.connect(ctrl.shutdown)
+    if not args.screenshot:
+        # Normální konec potvrdí i zápisy faulthandleru za běhu (na Windows i nefatální výjimky Qt).
+        # Přes aboutToQuit, protože při ukončení relace Windows se app.exec() nemusí vrátit.
+        app.aboutToQuit.connect(mark_clean_exit)
 
     # synchronizace autostartu s realitou (např. po přesunu EXE)
     try:
@@ -344,6 +389,8 @@ def main(argv=None) -> int:
     if args.screenshot:
         QTimer.singleShot(int(args.screenshot_delay * 1000),
                           lambda: (_save_screenshot(widget, args.screenshot, args.screenshot_bg), app.quit()))
+    elif crash_size is not None:
+        QTimer.singleShot(0, lambda: dialogs.update(crash=_show_crash_notice(crash_size)))
     rc = app.exec()
     lock.unlock()
     log.info("Konec (%s)", rc)

@@ -8,6 +8,9 @@ from __future__ import annotations
 _lang = "cs"
 
 EN: dict[str, str] = {
+    "Minule NetMonitor spadl. Otevřít log?": "NetMonitor crashed last time. Open the log?",
+    "Otevřít log": "Open log",
+    "Zavřít": "Close",
     "SÍŤOVÉ INFORMACE": "NETWORK INFO",
     "Nastavení…": "Settings…",
     "Profil": "Profile",

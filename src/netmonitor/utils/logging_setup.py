@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
+from datetime import datetime
 
 from .paths import log_dir
 
@@ -31,6 +32,19 @@ def setup_logging(debug: bool = False) -> None:
 
 
 _crash_file = None
+
+
+def write_crash_traceback(traceback_text: str) -> None:
+    """Zapíše nezachycenou výjimku main i ve windowed buildu bez stderr."""
+    try:
+        if _crash_file is None:
+            log_dir().mkdir(parents=True, exist_ok=True)
+            _enable_crash_log()
+        if _crash_file is not None:
+            _crash_file.write(f"\n{datetime.now().astimezone().isoformat()} – Nezachycená výjimka main\n{traceback_text}")
+            _crash_file.flush()
+    except (OSError, RuntimeError, ValueError):
+        logging.getLogger(__name__).warning("Traceback se nepodařilo uložit do crash.log", exc_info=True)
 
 
 def _enable_crash_log() -> None:
